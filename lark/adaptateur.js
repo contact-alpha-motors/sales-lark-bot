@@ -50,19 +50,37 @@ function demarrerAdaptateur({ appId, appSecret, etiquette }) {
   const dispatcher = new Lark.EventDispatcher({}).register({
     "im.message.receive_v1": async (data) => {
       const message = data.message;
-      if (!message) return;
+      if (!message) {
+        console.log(`[${etiquette}] evenement recu sans message`);
+        return;
+      }
+
+      console.log(
+        `[${etiquette}] message recu : id=${message.message_id} type=${message.message_type} chat_type=${message.chat_type} mentions=${(message.mentions || []).length}`
+      );
 
       try {
         // Idempotence : Lark relivre les evenements non acquittes.
-        if (messageDejaTraite(message.message_id)) return;
+        if (messageDejaTraite(message.message_id)) {
+          console.log(`[${etiquette}] deja traite, ignore`);
+          return;
+        }
 
         // En groupe, seuls les messages qui mentionnent le bot comptent.
-        if (message.chat_type === "group" && !(message.mentions || []).length) return;
+        if (message.chat_type === "group" && !(message.mentions || []).length) {
+          console.log(`[${etiquette}] groupe sans mention, ignore`);
+          return;
+        }
 
         const texte = extraireTexte(message);
         const cheminFichier = await extraireFichier(client, message);
 
-        if (!texte && !cheminFichier) return;
+        if (!texte && !cheminFichier) {
+          console.log(`[${etiquette}] ni texte ni fichier exploitable, ignore`);
+          return;
+        }
+
+        console.log(`[${etiquette}] traitement : "${texte.slice(0, 60)}"${cheminFichier ? " +fichier" : ""}`);
 
         const reponse = await traiterMessage({
           chatId: message.chat_id,
@@ -74,6 +92,7 @@ function demarrerAdaptateur({ appId, appSecret, etiquette }) {
 
         if (reponse.texte) await envoyerTexte(client, message.chat_id, reponse.texte);
         if (reponse.fichier) await envoyerFichier(client, message.chat_id, reponse.fichier);
+        console.log(`[${etiquette}] reponse envoyee${reponse.fichier ? " (+fichier)" : ""}`);
       } catch (erreur) {
         console.error(`[${etiquette}] Erreur message ${message.message_id} :`, erreur);
         await envoyerTexte(
