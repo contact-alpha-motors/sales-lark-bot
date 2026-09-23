@@ -1,0 +1,41 @@
+services:
+  sales-assistant:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: sales-assistant-bot
+
+    restart: unless-stopped
+
+    environment:
+      DATABASE_PATH: /app/data/assistant.db
+
+      # Lark : une app par espace de travail, la 2e est optionnelle.
+      LARK_APP_ID: ${LARK_APP_ID}
+      LARK_APP_SECRET: ${LARK_APP_SECRET}
+      LARK_APP_ID_2: ${LARK_APP_ID_2:-}
+      LARK_APP_SECRET_2: ${LARK_APP_SECRET_2:-}
+
+      # Modeles via OpenRouter.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      IA_MODELE_CONVERSATION: ${IA_MODELE_CONVERSATION:-google/gemini-2.5-flash-lite}
+      IA_MODELE_RESUME: ${IA_MODELE_RESUME:-google/gemini-2.5-flash-lite}
+      IA_MODELE_VISION: ${IA_MODELE_VISION:-google/gemini-2.5-flash}
+
+      # Odoo PRODUCTION (app., jamais odooee : base fantome).
+      ODOO_URL: ${ODOO_URL:-https://app.alphamotors-cameroun.com}
+      ODOO_DB: ${ODOO_DB:-alpha_motors}
+      ODOO_USER: ${ODOO_USER}
+      ODOO_PASSWORD: ${ODOO_PASSWORD}
+
+      # Open IDs autorises a ecrire dans Odoo (virgules). Vide = tout le
+      # monde : acceptable en test, pas en production.
+      LARK_ECRIVAINS: ${LARK_ECRIVAINS:-}
+
+      TZ: Africa/Douala
+
+    volumes:
+      - ./data:/app/data
+      - ./downloads:/app/downloads
+      - ./exports:/app/exports

@@ -1,0 +1,20 @@
+{
+  "name": "sales-assistant-bot",
+  "version": "0.1.0",
+  "description": "Assistant commercial Alpha Motors sur Lark : conversation, actions Odoo, documents",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "resumes": "node coeur/resumeur.js"
+  },
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.73.0",
+    "better-sqlite3": "^13.0.3",
+    "docx": "^9.7.1",
+    "dotenv": "^17.4.2",
+    "exceljs": "^4.4.0",
+    "node-cron": "^4.6.0"
+  }
+}
