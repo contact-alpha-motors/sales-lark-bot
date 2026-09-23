@@ -1,6 +1,11 @@
 const requetes = require("../../odoo/requetes");
 const { exporterXlsx } = require("../../documents/xlsx");
+const { exporterPdf } = require("../../documents/pdf");
 const { isoJour, enClair } = require("../dates");
+
+function libelleFormat(format) {
+  return format === "pdf" ? "PDF" : "Excel";
+}
 
 // ---------------------------------------------------------------------------
 // Boite a outils de l'agent.
@@ -25,11 +30,12 @@ const OUTILS = {
       function: {
         name: "export_liste",
         description:
-          "Exporte une liste du CRM en fichier Excel envoye dans la conversation. Listes disponibles : 'a_appeler' (personnes a appeler aujourd'hui, activites echues ou en retard) et 'rdv' (rendez-vous du calendrier sur une plage de dates). Pour 'rdv', fournis debut/fin en dates absolues AAAA-MM-JJ.",
+          "Exporte une liste du CRM en fichier (Excel ou PDF) envoye dans la conversation. Listes disponibles : 'a_appeler' (personnes a appeler aujourd'hui, activites echues ou en retard) et 'rdv' (rendez-vous du calendrier sur une plage de dates). Pour 'rdv', fournis debut/fin en dates absolues AAAA-MM-JJ.",
         parameters: {
           type: "object",
           properties: {
             liste: { type: "string", enum: ["a_appeler", "rdv"] },
+            format: { type: "string", enum: ["xlsx", "pdf"], description: "Format du fichier. 'pdf' si l'utilisateur demande un PDF, sinon 'xlsx' (defaut)." },
             agent: { type: "string", description: "Filtrer sur un commercial (nom ou partie du nom), optionnel" },
             debut: { type: "string", description: "Date de debut AAAA-MM-JJ (liste rdv). Convertis toi-meme 'demain' etc. en date." },
             fin: { type: "string", description: "Date de fin AAAA-MM-JJ (liste rdv). Egale a debut pour une seule journee." },
@@ -52,7 +58,7 @@ const OUTILS = {
       }
       const terme = p.periode_texte ? `« ${p.periode_texte} » = ` : "";
       const filtre = p.agent ? `, commercial ${p.agent}` : "";
-      return `Exporter en Excel la liste ${libelle} : ${terme}${periode}${filtre}`;
+      return `Exporter en ${libelleFormat(p.format)} la liste ${libelle} : ${terme}${periode}${filtre}`;
     },
     async executer(p) {
       const lignes =
@@ -74,10 +80,16 @@ const OUTILS = {
         return { texte: `Liste ${libelle} ${periode} : aucun resultat, aucun fichier genere.` };
       }
 
-      const nom = `${p.liste}-${horodatage()}.xlsx`;
-      const chemin = await exporterXlsx(nom, lignes, p.liste);
+      const format = p.format === "pdf" ? "pdf" : "xlsx";
+      const titre = `Liste ${libelle} ${periode}`;
+      const nom = `${p.liste}-${horodatage()}.${format}`;
+      const chemin =
+        format === "pdf"
+          ? await exporterPdf(nom, lignes, titre)
+          : await exporterXlsx(nom, lignes, p.liste);
+
       return {
-        texte: `Liste ${libelle} ${periode} : ${lignes.length} ligne(s), fichier Excel joint.`,
+        texte: `Liste ${libelle} ${periode} : ${lignes.length} ligne(s), fichier ${libelleFormat(format)} joint.`,
         fichier: chemin,
       };
     },
