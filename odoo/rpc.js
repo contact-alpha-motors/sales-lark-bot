@@ -63,6 +63,10 @@ function rechercherLire(modele, domaine, champs, options = {}) {
   return executer(modele, "search_read", [domaine], { fields: champs, ...options });
 }
 
+function compter(modele, domaine) {
+  return executer(modele, "search_count", [domaine]);
+}
+
 function creer(modele, valeurs) {
   return executer(modele, "create", [valeurs]);
 }
@@ -71,4 +75,4 @@ function mettreAJour(modele, id, valeurs) {
   return executer(modele, "write", [[id], valeurs]);
 }
 
-module.exports = { executer, rechercherLire, creer, mettreAJour };
+module.exports = { executer, rechercherLire, compter, creer, mettreAJour };

@@ -1,4 +1,5 @@
 const requetes = require("../../odoo/requetes");
+const { interroger, compterCrm } = require("../../odoo/lecture");
 const { exporterXlsx } = require("../../documents/xlsx");
 const { exporterPdf } = require("../../documents/pdf");
 const { isoJour, enClair } = require("../dates");
@@ -92,6 +93,59 @@ const OUTILS = {
         texte: `Liste ${libelle} ${periode} : ${lignes.length} ligne(s), fichier ${libelleFormat(format)} joint.`,
         fichier: chemin,
       };
+    },
+  },
+
+  interroger_crm: {
+    ecriture: false,
+    confirmer: false,
+    schema: {
+      type: "function",
+      function: {
+        name: "interroger_crm",
+        description:
+          "Lecture generalisee du CRM Odoo pour repondre a une question (renvoie les donnees dans la conversation, ne genere pas de fichier). " +
+          "Choisis le modele et ecris un domaine Odoo (liste de conditions [champ, operateur, valeur]). " +
+          "Modeles :\n" +
+          "- dealership.event.log : JOURNAL de toutes les interactions (appels, visites showroom, test drives, messages, RDV) avec resultat. Filtre 'event_type' par CODE : call, video_call, message, rdv, visit, test_drive. Filtre 'sub_type' par CODE : no_answer, call_back, wiil_come_back, already_came, client, not_online(PL), interested, not_interested, meeting_booked, video_meeting_booked, meeting_confirmed, scheduled(RDV honore), walk_in(visite spontanee), no_show(lapin), bad_number, completed. Champs : event_date, user_id, lead_id, contact_phone. BORNE TOUJOURS event_date (donnees bruitees : lignes futures, doublons).\n" +
+          "- crm.lead : pistes/opportunites. Champs : name, contact_name, phone, mobile, stage_id, user_id, type, create_date.\n" +
+          "- calendar.event : rendez-vous. Champs : start, stop, user_id, opportunity_id.\n" +
+          "- mail.activity : activites planifiees. Champs : date_deadline, activity_type_id, user_id, res_model, res_id.\n" +
+          "- sale.order : devis et commandes (montant amount_total, etat 'state' : draft/sent/sale/cancel). Champs : partner_id, date_order, user_id.\n" +
+          "- sale.order.line : lignes de devis (produit, quantite, prix).\n" +
+          "- alpha.call.sheet : feuilles d'appel. alpha.lead.phase : phases du pipeline. dealership.daily.report : stats showroom. voip.call : appels VoIP. crm.team : equipes.\n" +
+          "Les dates se filtrent en 'AAAA-MM-JJ HH:MM:SS'. Convertis toi-meme 'demain'/'aujourd'hui' en dates absolues a partir de la date du jour.",
+        parameters: {
+          type: "object",
+          properties: {
+            modele: {
+              type: "string",
+              enum: [
+                "dealership.event.log", "crm.lead", "calendar.event", "mail.activity",
+                "sale.order", "sale.order.line", "alpha.call.sheet", "alpha.lead.phase",
+                "dealership.daily.report", "voip.call", "crm.team",
+              ],
+            },
+            domaine: {
+              type: "array",
+              description: "Domaine Odoo, ex. [[\"event_type\",\"=\",\"visit\"],[\"event_date\",\">=\",\"2026-09-23 00:00:00\"],[\"event_date\",\"<=\",\"2026-09-23 23:59:59\"]]. Vide [] = tout (a eviter).",
+              items: {},
+            },
+            mode: { type: "string", enum: ["liste", "compte"], description: "'compte' pour un nombre (ex. 'combien de visites'), 'liste' (defaut) pour les enregistrements." },
+            limite: { type: "number", description: "Nombre max de lignes en mode liste (defaut 20, max 50)." },
+          },
+          required: ["modele"],
+        },
+      },
+    },
+    async executer(p) {
+      if (p.mode === "compte") {
+        const n = await compterCrm(p);
+        return { texte: `Resultat du comptage : ${n}.` };
+      }
+      const lignes = await interroger(p);
+      if (!lignes.length) return { texte: "Aucun resultat pour cette requete." };
+      return { texte: `${lignes.length} resultat(s) :\n${JSON.stringify(lignes)}` };
     },
   },
 
