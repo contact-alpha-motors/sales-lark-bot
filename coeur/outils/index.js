@@ -1,5 +1,6 @@
 const requetes = require("../../odoo/requetes");
 const { exporterXlsx } = require("../../documents/xlsx");
+const { isoJour, enClair } = require("../dates");
 
 // ---------------------------------------------------------------------------
 // Boite a outils de l'agent.
@@ -18,24 +19,40 @@ function horodatage() {
 const OUTILS = {
   export_liste: {
     ecriture: false,
+    confirmer: true,
     schema: {
       type: "function",
       function: {
         name: "export_liste",
         description:
-          "Exporte une liste du CRM en fichier Excel envoye dans la conversation. Listes disponibles : 'a_appeler' (personnes a appeler aujourd'hui, activites echues ou en retard) et 'rdv' (rendez-vous du calendrier sur une plage de dates).",
+          "Exporte une liste du CRM en fichier Excel envoye dans la conversation. Listes disponibles : 'a_appeler' (personnes a appeler aujourd'hui, activites echues ou en retard) et 'rdv' (rendez-vous du calendrier sur une plage de dates). Pour 'rdv', fournis debut/fin en dates absolues AAAA-MM-JJ.",
         parameters: {
           type: "object",
           properties: {
             liste: { type: "string", enum: ["a_appeler", "rdv"] },
             agent: { type: "string", description: "Filtrer sur un commercial (nom ou partie du nom), optionnel" },
-            debut: { type: "string", description: "Date de debut AAAA-MM-JJ (liste rdv), optionnel" },
-            fin: { type: "string", description: "Date de fin AAAA-MM-JJ (liste rdv), optionnel" },
+            debut: { type: "string", description: "Date de debut AAAA-MM-JJ (liste rdv). Convertis toi-meme 'demain' etc. en date." },
+            fin: { type: "string", description: "Date de fin AAAA-MM-JJ (liste rdv). Egale a debut pour une seule journee." },
+            periode_texte: { type: "string", description: "Reprends la formulation de l'utilisateur pour la periode, ex. 'demain', 'cette semaine'." },
             limite: { type: "number", description: "Nombre maximum de lignes, defaut 200" },
           },
           required: ["liste"],
         },
       },
+    },
+    decrire(p) {
+      const libelle = p.liste === "rdv" ? "des rendez-vous" : "des personnes a appeler";
+      let periode;
+      if (p.liste === "rdv") {
+        const d = p.debut || isoJour();
+        const f = p.fin || d;
+        periode = d === f ? `le ${enClair(d)}` : `du ${enClair(d)} au ${enClair(f)}`;
+      } else {
+        periode = `aujourd'hui (${enClair(isoJour())})`;
+      }
+      const terme = p.periode_texte ? `« ${p.periode_texte} » = ` : "";
+      const filtre = p.agent ? `, commercial ${p.agent}` : "";
+      return `Exporter en Excel la liste ${libelle} : ${terme}${periode}${filtre}`;
     },
     async executer(p) {
       const lignes =
@@ -43,18 +60,32 @@ const OUTILS = {
           ? await requetes.rendezVous(p)
           : await requetes.aAppelerAujourdhui(p);
 
+      const libelle = p.liste === "rdv" ? "des rendez-vous" : "des personnes a appeler";
+      const periode =
+        p.liste === "rdv"
+          ? (() => {
+              const d = p.debut || isoJour();
+              const f = p.fin || d;
+              return d === f ? `le ${enClair(d)}` : `du ${enClair(d)} au ${enClair(f)}`;
+            })()
+          : `aujourd'hui (${enClair(isoJour())})`;
+
       if (!lignes.length) {
-        return { texte: "Aucun resultat pour cette liste." };
+        return { texte: `Liste ${libelle} ${periode} : aucun resultat, aucun fichier genere.` };
       }
 
       const nom = `${p.liste}-${horodatage()}.xlsx`;
       const chemin = await exporterXlsx(nom, lignes, p.liste);
-      return { texte: `${lignes.length} ligne(s).`, fichier: chemin };
+      return {
+        texte: `Liste ${libelle} ${periode} : ${lignes.length} ligne(s), fichier Excel joint.`,
+        fichier: chemin,
+      };
     },
   },
 
   chercher_lead: {
     ecriture: false,
+    confirmer: false,
     schema: {
       type: "function",
       function: {
@@ -81,6 +112,7 @@ const OUTILS = {
 
   creer_lead: {
     ecriture: true,
+    confirmer: true,
     schema: {
       type: "function",
       function: {
@@ -111,6 +143,7 @@ const OUTILS = {
 
   creer_rdv: {
     ecriture: true,
+    confirmer: true,
     schema: {
       type: "function",
       function: {

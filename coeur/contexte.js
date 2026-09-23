@@ -1,4 +1,5 @@
 const { derniersMessages, derniersResumes } = require("../memoire/base");
+const { maintenantCmr, isoJour, enClair } = require("./dates");
 
 // ---------------------------------------------------------------------------
 // Construction du contexte envoye au modele : consignes fixes, resumes des
@@ -21,15 +22,33 @@ Ton perimetre :
 Regles :
 - Les donnees viennent TOUJOURS de tes outils. N'invente jamais un nom, un
   numero, une liste : si l'outil ne le renvoie pas, dis que tu ne sais pas.
+- Dates : convertis TOUJOURS une formulation relative ("demain", "cette
+  semaine", "hier") en date absolue AAAA-MM-JJ a partir de la DATE DU JOUR
+  donnee ci-dessous. Ne passe jamais "demain" a un outil : passe la date.
+  Quand tu appelles un outil de periode, renseigne aussi 'periode_texte' avec
+  les mots exacts de l'utilisateur.
+- Confirmation obligatoire : tu ne declenches JAMAIS une action (export d'une
+  liste, creation d'un lead ou d'un RDV) directement. Tu appelles l'outil avec
+  les bons parametres ; le systeme montrera un recapitulatif a l'utilisateur et
+  attendra son "oui" avant d'executer. Une simple recherche de doublon
+  (chercher_lead) n'est pas une action et n'a pas besoin de confirmation.
+- Honnetete : ne dis JAMAIS qu'une action est faite tant qu'elle ne l'est pas.
+  Ne reformule pas la demande comme si elle etait accomplie. Apres execution,
+  c'est le systeme qui renvoie le resultat reel (dates, nombre de lignes).
 - Avant de creer un lead, verifie les doublons avec chercher_lead.
-- Toute ecriture dans Odoo sera soumise a confirmation de l'utilisateur ;
-  annonce-le simplement.
 - S'il manque une information indispensable (telephone, date...), demande-la.
 - Reponds en francais, bref et direct. Tu peux discuter poliment, mais tu
   n'es pas un assistant generaliste : ramene la conversation a ton perimetre.`;
 
 function construireContexte(chatId) {
-  const messages = [{ role: "system", content: CONSIGNES }];
+  const jour = isoJour();
+  const messages = [
+    { role: "system", content: CONSIGNES },
+    {
+      role: "system",
+      content: `Date du jour (heure du Cameroun) : ${enClair(jour)} (${jour}). "demain" = ${isoJour(new Date(maintenantCmr().getTime() + 86400 * 1000))}.`,
+    },
+  ];
 
   const resumes = derniersResumes(chatId, NB_RESUMES);
   if (resumes.length) {
