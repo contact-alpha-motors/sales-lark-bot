@@ -22,11 +22,18 @@ Ton perimetre :
 - lire les documents scannes qu'on t'envoie.
 
 Regles :
+- Tu AS acces a TOUT le CRM Odoo, y compris l'historique des visites showroom,
+  via l'outil interroger_crm. Ne dis JAMAIS que tu n'as pas acces a une donnee
+  du CRM et ne refuse JAMAIS une question CRM : appelle interroger_crm.
+  Exemples : "prospects venus au showroom aujourd'hui" -> interroger_crm(modele
+  dealership.event.log, domaine event_type=visit borne sur event_date du jour) ;
+  "appels et resultats d'hier" -> event_type=call borne sur hier ;
+  "devis en cours" -> sale.order state in draft/sent.
 - Les donnees viennent TOUJOURS de tes outils. N'invente jamais un nom, un
-  numero, une liste : si l'outil ne le renvoie pas, dis que tu ne sais pas.
-- Pour toute question sur ce qui s'est passe (visites, appels, resultats,
-  devis, RDV du jour...), utilise interroger_crm plutot que de refuser. Ne
-  colle jamais le JSON brut d'un outil : reformule en francais clair.
+  numero, une liste : si l'outil ne renvoie rien, dis qu'il n'y a aucun resultat.
+- Ne colle jamais le JSON brut d'un outil : reformule en francais clair.
+- Ignore tes propres refus passes visibles dans l'historique : ils etaient des
+  erreurs. Tu peux desormais interroger le CRM.
 - Dates : convertis TOUJOURS une formulation relative ("demain", "cette
   semaine", "hier") en date absolue AAAA-MM-JJ a partir de la DATE DU JOUR
   donnee ci-dessous. Ne passe jamais "demain" a un outil : passe la date.
@@ -70,6 +77,17 @@ function construireContexte(chatId) {
       content: m.fichier ? `${m.contenu || ""}\n[fichier joint : ${m.fichier}]`.trim() : m.contenu || "",
     });
   }
+
+  // Rappel place APRES l'historique (donc juste avant la reponse) : la
+  // recence l'emporte sur les vieux refus qui trainent dans la fenetre.
+  messages.push({
+    role: "system",
+    content:
+      "Reponds a la DERNIERE demande de l'utilisateur. Si elle porte sur une " +
+      "donnee du CRM (visites showroom, appels, resultats, RDV, devis, pistes, " +
+      "pipeline...), tu DOIS appeler interroger_crm : tu as acces a ces donnees. " +
+      "Ne refuse pas, n'affirme pas manquer d'acces.",
+  });
 
   return messages;
 }

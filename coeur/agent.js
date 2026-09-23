@@ -67,9 +67,11 @@ async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichie
     const reponse = await converser(messages, schemas());
 
     if (!reponse.tool_calls?.length) {
+      console.log(`[agent ${chatId.slice(-6)}] aucune tool_call, reponse directe`);
       return repondre(chatId, reponse.content || "…", fichierAEnvoyer);
     }
 
+    console.log(`[agent ${chatId.slice(-6)}] outils demandes : ${reponse.tool_calls.map((t) => t.function.name).join(", ")}`);
     messages.push(reponse);
 
     for (const appel of reponse.tool_calls) {
