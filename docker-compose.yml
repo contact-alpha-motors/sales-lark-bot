@@ -35,7 +35,14 @@ services:
 
       TZ: Africa/Douala
 
+    # Volumes nommes (et non des bind-mounts ./data) : l'utilisateur
+    # Portainer non-admin qui deploie n'a pas le droit aux bind-mounts.
     volumes:
-      - ./data:/app/data
-      - ./downloads:/app/downloads
-      - ./exports:/app/exports
+      - sales_data:/app/data
+      - sales_downloads:/app/downloads
+      - sales_exports:/app/exports
+
+volumes:
+  sales_data:
+  sales_downloads:
+  sales_exports:
