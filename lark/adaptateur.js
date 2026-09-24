@@ -1,6 +1,6 @@
 const Lark = require("@larksuiteoapi/node-sdk");
 const { traiterMessage } = require("../coeur/agent");
-const { messageDejaTraite } = require("../memoire/base");
+const { claimMessage } = require("../memoire/base");
 const { telechargerPieceJointe, envoyerTexte, envoyerFichier } = require("./fichiers");
 
 // ---------------------------------------------------------------------------
@@ -60,9 +60,11 @@ function demarrerAdaptateur({ appId, appSecret, etiquette }) {
       );
 
       try {
-        // Idempotence : Lark relivre les evenements non acquittes.
-        if (messageDejaTraite(message.message_id)) {
-          console.log(`[${etiquette}] deja traite, ignore`);
+        // Idempotence : on reserve le message des sa reception. Lark relivre
+        // un evenement non acquitte, et une extraction lente laissait
+        // plusieurs traitements lourds se lancer en parallele.
+        if (!claimMessage(message.message_id)) {
+          console.log(`[${etiquette}] deja pris en charge, ignore`);
           return;
         }
 

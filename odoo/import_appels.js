@@ -1,7 +1,9 @@
-const { creer, rechercherLire, executer } = require("./rpc");
+const path = require("path");
+const { creer, rechercherLire } = require("./rpc");
 const { chercherParTelephone } = require("./requetes");
 const { normaliserTelephone, telephoneValide, analyserResultat } = require("../coeur/referentiel");
 const { extraireFichierJson } = require("../ia");
+const { disponible: popplerDispo, pdfEnImages, nettoyer } = require("../documents/pdf_en_images");
 
 // ---------------------------------------------------------------------------
 // Import d'une fiche d'appel scannee vers Odoo (ecriture directe).
@@ -14,28 +16,58 @@ const { extraireFichierJson } = require("../ia");
 
 const TYPE_ACTIVITE_RDV = Number(process.env.ODOO_ACTIVITY_MEETING_ID || 3); // "Meeting"
 
-const INSTRUCTION_EXTRACTION = `Tu lis une FICHE D'APPEL manuscrite d'Alpha Motors (concession auto).
-L'EN-TETE donne l'agent qui a passe les appels et la date. Chaque LIGNE du tableau = un appel a un prospect.
+// Instruction par PAGE : on extrait chaque page separement (un seul appel de
+// vision par image, en parallele). Bien plus rapide et robuste qu'un seul
+// appel avec 5 images — qui faisait expirer le modele.
+const INSTRUCTION_PAGE = `Ceci est UNE page d'une FICHE D'APPEL manuscrite d'Alpha Motors (concession auto).
+L'EN-TETE de page donne l'agent qui a passe les appels et la date. Chaque LIGNE du tableau = un appel a un prospect.
 Renvoie UNIQUEMENT du JSON, cette forme exacte :
 {
-  "agent": "<nom en en-tete>",
-  "date_appels": "AAAA-MM-JJ (date en en-tete)",
+  "agent": "<nom en en-tete de page>",
+  "date_appels_brut": "<texte brut de la date en en-tete, ex '22/09/26'>",
   "lignes": [
     {
       "nom": "<nom du prospect ou ''>",
       "telephone": "<chiffres du numero>",
       "statut_precedent": "<colonne statut imprimee ou ''>",
-      "code_resultat": "<le code manuscrit du resultat de l'appel: PP, PI, NR, NRP, RDV, BL, OUI, PL, PEL...>",
+      "code_resultat": "<le code manuscrit du resultat: PP, PI, NR, NRP, RDV, BL, OUI, PL, PEL...>",
       "commentaire": "<le commentaire manuscrit ou ''>",
       "rdv_texte": "<date/heure de RDV si mentionnee, sinon ''>",
       "vehicule": "<vehicule si mentionne ou ''>"
     }
   ]
 }
-Lis TOUTES les lignes de TOUTES les pages. Ne corrige pas les numeros. Info absente = chaine vide.`;
+Lis TOUTES les lignes de CETTE page. Ne corrige pas les numeros. Info absente = chaine vide.`;
 
+function fusionnerPages(pages) {
+  const ok = pages.filter(Boolean);
+  const entete = ok.find((p) => p.agent) || {};
+  return {
+    agent: entete.agent || "",
+    date_appels_brut: entete.date_appels_brut || "",
+    lignes: ok.flatMap((p) => p.lignes || []),
+  };
+}
+
+// Extraction : un PDF est rasterise (poppler) puis chaque page est lue en
+// parallele. Une image seule est lue directement. Une page qui echoue est
+// simplement ignoree, le reste de la fiche passe quand meme.
 async function extraireFeuilleAppel(chemin) {
-  return extraireFichierJson(INSTRUCTION_EXTRACTION, chemin);
+  const ext = path.extname(chemin).toLowerCase();
+
+  if (ext === ".pdf" && (await popplerDispo())) {
+    const { images, dossier } = await pdfEnImages(chemin);
+    try {
+      const pages = await Promise.all(
+        images.map((img) => extraireFichierJson(INSTRUCTION_PAGE, img).catch(() => null))
+      );
+      return fusionnerPages(pages);
+    } finally {
+      nettoyer(dossier);
+    }
+  }
+
+  return extraireFichierJson(INSTRUCTION_PAGE, chemin);
 }
 
 async function resoudreAgent(nom) {
@@ -61,9 +93,9 @@ function parserDateRdv(texte, anneeDefaut) {
 // la piste, le sous-type d'evenement, et une activite eventuelle.
 async function construirePlan(extraction) {
   const agent = await resoudreAgent(extraction.agent);
-  const dateAppels = (extraction.date_appels || "").match(/^\d{4}-\d{2}-\d{2}$/)
-    ? extraction.date_appels
-    : null;
+  // La date d'en-tete est parsee en code (JJ/MM/AA) : les modeles lisaient
+  // "22/09/26" comme 2022 et dataient les appels en 2022.
+  const dateAppels = parserDateRdv(extraction.date_appels_brut, 2026);
   const anneeDefaut = dateAppels ? Number(dateAppels.slice(0, 4)) : 2026;
   const eventDate = `${dateAppels || `${anneeDefaut}-01-01`} 12:00:00`;
 

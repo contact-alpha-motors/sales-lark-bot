@@ -40,6 +40,13 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
+  -- Messages deja pris en charge : Lark relivre un evenement non acquitte,
+  -- et une extraction lente laissait 3 traitements concurrents se lancer.
+  CREATE TABLE IF NOT EXISTS traites (
+    message_id TEXT PRIMARY KEY,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
   -- Trace de chaque action executee : qui, quoi, quel enregistrement.
   CREATE TABLE IF NOT EXISTS journal (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -69,6 +76,15 @@ function enregistrerMessage(valeurs) {
 
 function messageDejaTraite(messageId) {
   return !!db.prepare("SELECT 1 FROM messages WHERE message_id = ?").get(messageId);
+}
+
+// Reserve un message des sa reception : renvoie true une seule fois par id.
+// Empeche les relivraisons Lark de relancer un traitement (surtout les longs
+// imports) en parallele.
+const reserver = db.prepare("INSERT OR IGNORE INTO traites (message_id) VALUES (?)");
+function claimMessage(messageId) {
+  if (!messageId) return true;
+  return reserver.run(messageId).changes > 0;
 }
 
 function derniersMessages(chatId, limite = 20) {
@@ -130,6 +146,7 @@ function journaliser(chatId, senderId, outil, parametres, resultat) {
 module.exports = {
   enregistrerMessage,
   messageDejaTraite,
+  claimMessage,
   derniersMessages,
   messagesDuJour,
   chatsActifsDuJour,

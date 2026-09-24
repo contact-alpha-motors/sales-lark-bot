@@ -26,13 +26,13 @@ const BASE = process.env.IA_BASE_URL || "https://openrouter.ai/api/v1";
 const MODELES = {
   CONVERSATION: process.env.IA_MODELE_CONVERSATION || "google/gemini-2.5-flash-lite",
   RESUME: process.env.IA_MODELE_RESUME || "google/gemini-2.5-flash-lite",
-  VISION: process.env.IA_MODELE_VISION || "google/gemini-2.5-flash",
+  VISION: process.env.IA_MODELE_VISION || "google/gemini-2.5-flash-lite",
 };
 
 const TIMEOUTS = {
   CONVERSATION: Number(process.env.IA_TIMEOUT_CONVERSATION || 120000),
   RESUME: Number(process.env.IA_TIMEOUT_RESUME || 120000),
-  VISION: Number(process.env.IA_TIMEOUT_VISION || 300000),
+  VISION: Number(process.env.IA_TIMEOUT_VISION || 90000),
 };
 
 const TENTATIVES = Number(process.env.IA_TENTATIVES || 3);
