@@ -46,10 +46,14 @@ const MODELES = {
     tri: "create_date desc",
     champs: [
       "id", "x_name", "x_prospect", "x_studio_date_et_heure_de_reception",
-      "x_studio_recu_par_1", "x_studio_motif_de_discussion", "x_studio_rsultat_de_rception",
-      "x_studio_niveau_dintret", "x_studio_qualit_prospect", "x_studio_vhicule_dintrt",
-      "x_lieu_de_reception", "x_studio_tlphone", "x_studio_action_suivante_prvue", "x_commentaire",
+      "x_studio_recu_par", "x_studio_recu_par_1", "x_studio_motif_de_discussion",
+      "x_studio_rsultat_de_rception", "x_studio_niveau_dintret", "x_studio_qualit_prospect",
+      "x_studio_vhicule_dintrt", "x_lieu_de_reception", "x_studio_tlphone",
+      "x_studio_action_suivante_prvue", "x_commentaire",
     ],
+    // Champs many2many : search_read ne renvoie que des ids, pas les noms. On
+    // les resout ici vers le nom du modele cible. "recu par" est un m2m.
+    resoudre: { x_studio_recu_par_1: "hr.employee" },
   },
   "calendar.event": {
     tri: "start asc",
@@ -108,7 +112,27 @@ async function interroger({ modele, domaine = [], champs, tri, limite = 20 }) {
   const f = Array.isArray(champs) && champs.length ? champs : conf.champs;
   const lim = Math.min(Math.max(1, limite || 20), 50);
   const lignes = await rechercherLire(modele, domaine, f, { limit: lim, order: tri || conf.tri });
-  return lignes.map((l) => traduire(conf, l));
+  const traduites = lignes.map((l) => traduire(conf, l));
+  await resoudreRelations(conf, traduites);
+  return traduites;
+}
+
+// Les many2many reviennent en tableaux d'ids ; on remplace chaque id par le
+// nom du modele cible (ex. x_studio_recu_par_1 -> nom de l'employe recu par).
+async function resoudreRelations(conf, lignes) {
+  if (!conf.resoudre) return;
+  for (const [champ, modeleCible] of Object.entries(conf.resoudre)) {
+    const ids = new Set();
+    for (const l of lignes) {
+      if (Array.isArray(l[champ])) l[champ].forEach((x) => typeof x === "number" && ids.add(x));
+    }
+    if (!ids.size) continue;
+    const noms = await rechercherLire(modeleCible, [["id", "in", [...ids]]], ["id", "name"]);
+    const table = new Map(noms.map((n) => [n.id, n.name]));
+    for (const l of lignes) {
+      if (Array.isArray(l[champ])) l[champ] = l[champ].map((x) => (typeof x === "number" ? table.get(x) || x : x));
+    }
+  }
 }
 
 async function compterCrm({ modele, domaine = [] }) {
