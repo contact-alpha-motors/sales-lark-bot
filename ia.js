@@ -3,6 +3,7 @@ require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
 const { disponible: popplerDispo, pdfEnImages, nettoyer } = require("./documents/pdf_en_images");
+const { enregistrerAppelIa } = require("./memoire/base");
 
 // ---------------------------------------------------------------------------
 // Passerelle vers les modeles, via OpenRouter
@@ -80,6 +81,7 @@ async function appeler(tache, corps) {
   let derniereErreur;
 
   for (let tentative = 1; tentative <= TENTATIVES; tentative++) {
+    const t0 = Date.now();
     try {
       const reponse = await fetch(`${BASE}/chat/completions`, {
         method: "POST",
@@ -87,7 +89,9 @@ async function appeler(tache, corps) {
           Authorization: `Bearer ${cle()}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ model: modele, ...corps }),
+        // usage.include => OpenRouter renvoie le cout reel de la requete dans
+        // la reponse, pas besoin d'un appel supplementaire.
+        body: JSON.stringify({ model: modele, usage: { include: true }, ...corps }),
         signal: AbortSignal.timeout(TIMEOUTS[tache]),
       });
 
@@ -98,6 +102,18 @@ async function appeler(tache, corps) {
 
       const donnees = await reponse.json();
       const message = donnees?.choices?.[0]?.message;
+      const u = donnees?.usage || {};
+      const duree = Date.now() - t0;
+
+      tracerAppel({
+        tache, modele,
+        prompt_tokens: u.prompt_tokens ?? null,
+        completion_tokens: u.completion_tokens ?? null,
+        total_tokens: u.total_tokens ?? null,
+        cout: typeof u.cost === "number" ? u.cost : null,
+        duree_ms: duree,
+        statut: "ok",
+      });
 
       if (!message) {
         throw new Error(`Reponse sans message (${modele})`);
@@ -106,6 +122,7 @@ async function appeler(tache, corps) {
       return message;
     } catch (erreur) {
       derniereErreur = erreur;
+      tracerAppel({ tache, modele, duree_ms: Date.now() - t0, statut: "erreur" });
       if (tentative < TENTATIVES) {
         await attendre(2000 * tentative);
       }
@@ -113,6 +130,20 @@ async function appeler(tache, corps) {
   }
 
   throw derniereErreur;
+}
+
+// Journalise et affiche un appel modele. Tolerant : la telemetrie ne doit
+// jamais casser la requete.
+function tracerAppel(r) {
+  try {
+    enregistrerAppelIa(r);
+    const cout = typeof r.cout === "number" ? `$${r.cout.toFixed(6)}` : "cout=?";
+    console.log(
+      `[ia] ${r.statut} ${r.tache} ${r.modele} ${r.total_tokens ?? "?"}tok ${cout} ${((r.duree_ms || 0) / 1000).toFixed(1)}s`
+    );
+  } catch (e) {
+    console.error("[ia] telemetrie:", e.message);
+  }
 }
 
 // Dialogue avec outils. Retourne le message brut du modele : soit du texte,

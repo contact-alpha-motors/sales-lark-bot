@@ -47,6 +47,21 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
+  -- Telemetrie de chaque appel modele : tokens, cout, duree. Budget serre :
+  -- on veut voir a la trace ce que chaque requete coute.
+  CREATE TABLE IF NOT EXISTS journal_ia (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tache TEXT,
+    modele TEXT,
+    prompt_tokens INTEGER,
+    completion_tokens INTEGER,
+    total_tokens INTEGER,
+    cout REAL,
+    duree_ms INTEGER,
+    statut TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
   -- Trace de chaque action executee : qui, quoi, quel enregistrement.
   CREATE TABLE IF NOT EXISTS journal (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -143,6 +158,30 @@ function journaliser(chatId, senderId, outil, parametres, resultat) {
   ).run(chatId, senderId, outil, JSON.stringify(parametres || {}), JSON.stringify(resultat || {}));
 }
 
+const insAppelIa = db.prepare(`
+  INSERT INTO journal_ia (tache, modele, prompt_tokens, completion_tokens, total_tokens, cout, duree_ms, statut)
+  VALUES (@tache, @modele, @prompt_tokens, @completion_tokens, @total_tokens, @cout, @duree_ms, @statut)
+`);
+
+function enregistrerAppelIa(r) {
+  insAppelIa.run({
+    prompt_tokens: null, completion_tokens: null, total_tokens: null,
+    cout: null, duree_ms: null, statut: null, modele: null, tache: null,
+    ...r,
+  });
+}
+
+// Totaux de cout modele : jour / semaine / tout, + nb d'appels.
+function coutIa() {
+  const q = (where) =>
+    db.prepare(`SELECT COALESCE(SUM(cout),0) c, COUNT(*) n, COALESCE(SUM(total_tokens),0) t FROM journal_ia ${where}`).get();
+  return {
+    jour: q("WHERE DATE(created_at,'+1 hours') = DATE(CURRENT_TIMESTAMP,'+1 hours')"),
+    semaine: q("WHERE created_at >= DATETIME(CURRENT_TIMESTAMP,'-7 days')"),
+    total: q(""),
+  };
+}
+
 module.exports = {
   enregistrerMessage,
   messageDejaTraite,
@@ -155,4 +194,6 @@ module.exports = {
   poserActionEnAttente,
   prendreActionEnAttente,
   journaliser,
+  enregistrerAppelIa,
+  coutIa,
 };
