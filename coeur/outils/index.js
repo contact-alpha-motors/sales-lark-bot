@@ -107,7 +107,8 @@ const OUTILS = {
           "Lecture generalisee du CRM Odoo pour repondre a une question (renvoie les donnees dans la conversation, ne genere pas de fichier). " +
           "Choisis le modele et ecris un domaine Odoo (liste de conditions [champ, operateur, valeur]). " +
           "Modeles :\n" +
-          "- dealership.event.log : JOURNAL de toutes les interactions (appels, visites showroom, test drives, messages, RDV) avec resultat. Filtre 'event_type' par CODE : call, video_call, message, rdv, visit, test_drive. Filtre 'sub_type' par CODE : no_answer, call_back, wiil_come_back, already_came, client, not_online(PL), interested, not_interested, meeting_booked, video_meeting_booked, meeting_confirmed, scheduled(RDV honore), walk_in(visite spontanee), no_show(lapin), bad_number, completed. Champs : event_date, user_id, lead_id, contact_phone. BORNE TOUJOURS event_date (donnees bruitees : lignes futures, doublons).\n" +
+          "- x_reception : FICHE DE RECEPTION detaillee remplie par l'hotesse (LA source pour les receptions/clients recus au showroom). Champs : x_name (nom), x_studio_date_et_heure_de_reception (date/heure, parfois vide sur vieilles fiches), x_studio_recu_par_1 (recu par, employe), x_studio_motif_de_discussion (RDV/Test Drive/Directement du stand/Autre), x_studio_rsultat_de_rception (Vente/Proforma/Promesse d'achat/Probleme de stock/Autre), x_studio_niveau_dintret, x_studio_qualit_prospect (Tiede/Froid/Chaud/Curieux), x_lieu_de_reception (Showroom/Bureau/Sortie/Autres), x_studio_action_suivante_prvue, x_commentaire, x_prospect (lien crm.lead). Les valeurs sont deja en francais. Pour 'les receptions', utilise CE modele.\n" +
+          "- dealership.event.log : JOURNAL de toutes les interactions (appels, visites showroom, test drives, messages, RDV) avec resultat, plus leger que x_reception. Filtre 'event_type' par CODE : call, video_call, message, rdv, visit, test_drive. Filtre 'sub_type' par CODE : no_answer, call_back, wiil_come_back, already_came, client, not_online(PL), interested, not_interested, meeting_booked, video_meeting_booked, meeting_confirmed, scheduled(RDV honore), walk_in(visite spontanee), no_show(lapin), bad_number, completed. Champs : event_date, user_id, lead_id, contact_phone. BORNE TOUJOURS event_date (donnees bruitees : lignes futures, doublons).\n" +
           "- crm.lead : pistes/opportunites. Champs : name, contact_name, phone, mobile, stage_id, user_id, type, create_date.\n" +
           "- calendar.event : rendez-vous. Champs : start, stop, user_id, opportunity_id.\n" +
           "- mail.activity : activites planifiees. Champs : date_deadline, activity_type_id, user_id, res_model, res_id.\n" +
@@ -121,7 +122,7 @@ const OUTILS = {
             modele: {
               type: "string",
               enum: [
-                "dealership.event.log", "crm.lead", "calendar.event", "mail.activity",
+                "x_reception", "dealership.event.log", "crm.lead", "calendar.event", "mail.activity",
                 "sale.order", "sale.order.line", "alpha.call.sheet", "alpha.lead.phase",
                 "dealership.daily.report", "voip.call", "crm.team",
               ],

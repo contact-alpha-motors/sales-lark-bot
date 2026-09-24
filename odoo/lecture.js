@@ -37,6 +37,20 @@ const MODELES = {
     champs: ["id", "event_type", "sub_type", "event_date", "x_studio_nom", "contact_phone", "user_id", "lead_id", "callback_date", "notes"],
     libelles: { event_type: EVENT_TYPE, sub_type: SUB_TYPE },
   },
+  // Fiche de reception detaillee remplie par l'hotesse (modele Studio). Plus
+  // riche que le journal d'evenements ; ses valeurs de selection sont deja en
+  // francais, donc pas de table de libelles. Attention : la date de reception
+  // (x_studio_date_et_heure_de_reception) est vide sur d'anciennes fiches, d'ou
+  // le tri par create_date.
+  "x_reception": {
+    tri: "create_date desc",
+    champs: [
+      "id", "x_name", "x_prospect", "x_studio_date_et_heure_de_reception",
+      "x_studio_recu_par_1", "x_studio_motif_de_discussion", "x_studio_rsultat_de_rception",
+      "x_studio_niveau_dintret", "x_studio_qualit_prospect", "x_studio_vhicule_dintrt",
+      "x_lieu_de_reception", "x_studio_tlphone", "x_studio_action_suivante_prvue", "x_commentaire",
+    ],
+  },
   "calendar.event": {
     tri: "start asc",
     champs: ["id", "name", "start", "stop", "user_id", "opportunity_id"],
