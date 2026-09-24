@@ -8,6 +8,7 @@ RUN apt-get update \
         python3 \
         make \
         g++ \
+        poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./

@@ -1,5 +1,9 @@
 require("dotenv").config();
 
+const fs = require("fs");
+const path = require("path");
+const { disponible: popplerDispo, pdfEnImages, nettoyer } = require("./documents/pdf_en_images");
+
 // ---------------------------------------------------------------------------
 // Passerelle vers les modeles, via OpenRouter
 //
@@ -115,31 +119,49 @@ async function resumer(instruction, texte) {
   return message.content || "";
 }
 
-// Lecture d'un fichier joint (image ou PDF) : renvoie le texte extrait.
-async function lireFichier(instruction, chemin) {
-  const fs = require("fs");
-  const path = require("path");
+function imagePart(chemin, mime) {
+  const b64 = fs.readFileSync(chemin).toString("base64");
+  return { type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } };
+}
 
+// Construit le contenu multimodal pour un fichier. Un PDF est converti en
+// pages PNG (via poppler) et envoye comme images : cela evite les frais
+// "files" d'OpenRouter et lit mieux le manuscrit. Repli sur l'envoi du PDF
+// brut si poppler est absent. Renvoie aussi une fonction de nettoyage.
+async function construireContenuVision(instruction, chemin) {
   const extension = path.extname(chemin).toLowerCase();
-  const mime = MIME[extension];
-  if (!mime) {
-    throw new Error(`Type de fichier non lisible : ${extension}`);
+
+  if (extension === ".pdf") {
+    if (await popplerDispo()) {
+      const { images, dossier } = await pdfEnImages(chemin);
+      const parts = [{ type: "text", text: instruction }, ...images.map((img) => imagePart(img, "image/png"))];
+      return { contenu: parts, nettoyage: () => nettoyer(dossier) };
+    }
+    // Repli : PDF brut en piece "file" (necessite du credit OpenRouter).
+    const b64 = fs.readFileSync(chemin).toString("base64");
+    return {
+      contenu: [
+        { type: "text", text: instruction },
+        { type: "file", file: { filename: path.basename(chemin), file_data: `data:application/pdf;base64,${b64}` } },
+      ],
+      nettoyage: () => {},
+    };
   }
 
-  const base64 = fs.readFileSync(chemin).toString("base64");
-  const url = `data:${mime};base64,${base64}`;
+  const mime = MIME[extension];
+  if (!mime) throw new Error(`Type de fichier non lisible : ${extension}`);
+  return { contenu: [{ type: "text", text: instruction }, imagePart(chemin, mime)], nettoyage: () => {} };
+}
 
-  const contenu =
-    mime === "application/pdf"
-      ? [{ type: "text", text: instruction }, { type: "file", file: { filename: path.basename(chemin), file_data: url } }]
-      : [{ type: "text", text: instruction }, { type: "image_url", image_url: { url } }];
-
-  const message = await appeler("VISION", {
-    messages: [{ role: "user", content: contenu }],
-    temperature: 0.1,
-  });
-
-  return message.content || "";
+// Lecture d'un fichier joint (image ou PDF) : renvoie le texte extrait.
+async function lireFichier(instruction, chemin) {
+  const { contenu, nettoyage } = await construireContenuVision(instruction, chemin);
+  try {
+    const message = await appeler("VISION", { messages: [{ role: "user", content: contenu }], temperature: 0.1 });
+    return message.content || "";
+  } finally {
+    nettoyage();
+  }
 }
 
 function nettoyerJson(brut) {
@@ -150,31 +172,20 @@ function nettoyerJson(brut) {
 // Lecture d'un fichier avec sortie JSON (extraction structuree). Renvoie
 // l'objet parse, ou null si le modele n'a rien renvoye d'exploitable.
 async function extraireFichierJson(instruction, chemin) {
-  const fs = require("fs");
-  const path = require("path");
-
-  const extension = path.extname(chemin).toLowerCase();
-  const mime = MIME[extension];
-  if (!mime) throw new Error(`Type de fichier non lisible : ${extension}`);
-
-  const base64 = fs.readFileSync(chemin).toString("base64");
-  const url = `data:${mime};base64,${base64}`;
-
-  const contenu =
-    mime === "application/pdf"
-      ? [{ type: "text", text: instruction }, { type: "file", file: { filename: path.basename(chemin), file_data: url } }]
-      : [{ type: "text", text: instruction }, { type: "image_url", image_url: { url } }];
-
-  const message = await appeler("VISION", {
-    messages: [{ role: "user", content: contenu }],
-    temperature: 0.1,
-    response_format: { type: "json_object" },
-  });
-
+  const { contenu, nettoyage } = await construireContenuVision(instruction, chemin);
   try {
-    return JSON.parse(nettoyerJson(message.content || "{}"));
-  } catch {
-    return null;
+    const message = await appeler("VISION", {
+      messages: [{ role: "user", content: contenu }],
+      temperature: 0.1,
+      response_format: { type: "json_object" },
+    });
+    try {
+      return JSON.parse(nettoyerJson(message.content || "{}"));
+    } catch {
+      return null;
+    }
+  } finally {
+    nettoyage();
   }
 }
 
