@@ -111,7 +111,8 @@ const OUTILS = {
           "- dealership.event.log : JOURNAL d'interactions (appels, visites, test drives, messages, RDV) pour les COMPTAGES et statistiques, PAS pour lister les personnes recues. NE CONCLUS JAMAIS 'pas de telephone' depuis ce modele : son champ contact_phone est souvent vide alors que le prospect A un numero dans x_reception. Filtre 'event_type' par CODE : call, video_call, message, rdv, visit, test_drive. Filtre 'sub_type' par CODE : no_answer, call_back, wiil_come_back, already_came, client, not_online(PL), interested, not_interested, meeting_booked, video_meeting_booked, meeting_confirmed, scheduled(RDV honore), walk_in(visite spontanee), no_show(lapin), bad_number, completed. Champs : event_date, user_id, lead_id. BORNE TOUJOURS event_date (donnees bruitees : lignes futures, doublons).\n" +
           "- crm.lead : pistes/opportunites. Champs : name, contact_name, phone, mobile, stage_id, user_id, type, create_date.\n" +
           "- calendar.event : rendez-vous. Champs : start, stop, user_id, opportunity_id.\n" +
-          "- mail.activity : activites planifiees. Champs : date_deadline, activity_type_id, user_id, res_model, res_id.\n" +
+          "- mail.activity : activites PLANIFIEES (a faire, non encore faites). Champs : date_deadline, activity_type_id, user_id, res_model, res_id.\n" +
+          "- mail.message : activites TERMINEES (cochees 'fait'). Filtre mail_activity_type_id != false et model='crm.lead', borne 'date'. C'est la seule trace des activites faites (mail.activity ne garde que le planifie). Rarement utilise par l'equipe.\n" +
           "- sale.order : devis et commandes (montant amount_total, etat 'state' : draft/sent/sale/cancel). Champs : partner_id, date_order, user_id.\n" +
           "- sale.order.line : lignes de devis (produit, quantite, prix).\n" +
           "- alpha.call.sheet : feuilles d'appel. alpha.lead.phase : phases du pipeline. dealership.daily.report : stats showroom. voip.call : appels VoIP. crm.team : equipes.\n" +
@@ -123,7 +124,7 @@ const OUTILS = {
               type: "string",
               enum: [
                 "x_reception", "dealership.event.log", "crm.lead", "calendar.event", "mail.activity",
-                "sale.order", "sale.order.line", "alpha.call.sheet", "alpha.lead.phase",
+                "mail.message", "sale.order", "sale.order.line", "alpha.call.sheet", "alpha.lead.phase",
                 "dealership.daily.report", "voip.call", "crm.team",
               ],
             },

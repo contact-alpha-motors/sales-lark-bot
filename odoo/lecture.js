@@ -63,6 +63,13 @@ const MODELES = {
     tri: "date_deadline asc",
     champs: ["id", "res_model", "res_id", "activity_type_id", "summary", "date_deadline", "user_id"],
   },
+  // Activites TERMINEES : quand une mail.activity est cochee "fait", Odoo la
+  // supprime et laisse un message ici avec mail_activity_type_id. C'est la
+  // seule trace des activites faites.
+  "mail.message": {
+    tri: "date desc",
+    champs: ["id", "date", "mail_activity_type_id", "model", "res_id", "author_id", "subject"],
+  },
   "sale.order": {
     tri: "date_order desc",
     champs: ["id", "name", "partner_id", "amount_total", "state", "date_order", "user_id"],
