@@ -89,8 +89,53 @@ function analyserResultat(codeResultat, commentaire = "") {
     return { statut: "routage", canon: c, note: c === "DP" ? "Demande de partenariat" : "Demande d'emploi" };
   }
 
+  // Formes ECRITES (pas un code) qui signifient "pas joignable" = PL.
+  // Couvre injoignable + ses variantes OCR (imjoign...), telephone eteint,
+  // messagerie, appel renvoye.
+  if (/INJOIG|IMJOIG|JOIGN|[EÉ]TEINT|MESSAGERIE|APPEL RENVOY/.test(texte)) {
+    return { statut: "ok", sous_type: "not_online", event_type: "call", canon: "PL", note: "" };
+  }
+
   // PP, OUI ou code inconnu : on ne tranche pas.
   return { statut: "ambigu", canon: [...canons][0] || (codeResultat || "").trim(), note: "" };
 }
 
-module.exports = { normaliserTelephone, telephoneValide, analyserResultat };
+// --- Detection agent / date depuis un indice libre (nom de fichier, legende) ---
+// Il n'y a que trois agents ; leurs fiches sont souvent sans en-tete mais
+// nommees "Fiche Ben 22 septembre.pdf".
+function detecterAgent(texte) {
+  const t = (texte || "").toLowerCase();
+  if (/astri/.test(t)) return "Astride";
+  if (/gloria|ngakeu/.test(t)) return "Gloria";
+  if (/\bben\b|ben\s*azir/.test(t)) return "Ben";
+  return null;
+}
+
+const MOIS_FR = {
+  janvier: 1, fevrier: 2, mars: 3, avril: 4, mai: 5, juin: 6,
+  juillet: 7, aout: 8, septembre: 9, octobre: 10, novembre: 11, decembre: 12,
+};
+
+function sansAccents(s) {
+  return s.normalize("NFD").replace(/[̀-ͯ]/g, "");
+}
+
+// "22 septembre 2026", "22 septembre", "22/09/26", "22/09/2026" -> AAAA-MM-JJ.
+function detecterDate(texte, anneeDefaut = 2026) {
+  const t = sansAccents((texte || "").toLowerCase());
+  const ymd = (y, m, j) =>
+    m >= 1 && m <= 12 && j >= 1 && j <= 31 ? `${y}-${String(m).padStart(2, "0")}-${String(j).padStart(2, "0")}` : null;
+
+  let m = t.match(/(\d{1,2})\s+(janvier|fevrier|mars|avril|mai|juin|juillet|aout|septembre|octobre|novembre|decembre)\s*(\d{4})?/);
+  if (m) return ymd(m[3] ? Number(m[3]) : anneeDefaut, MOIS_FR[m[2]], Number(m[1]));
+
+  m = t.match(/(\d{1,2})[\/-](\d{1,2})(?:[\/-](\d{2,4}))?/);
+  if (m) {
+    let annee = anneeDefaut;
+    if (m[3]) annee = m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3]);
+    return ymd(annee, Number(m[2]), Number(m[1]));
+  }
+  return null;
+}
+
+module.exports = { normaliserTelephone, telephoneValide, analyserResultat, detecterAgent, detecterDate };

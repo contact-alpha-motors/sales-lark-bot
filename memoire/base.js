@@ -143,6 +143,13 @@ function poserActionEnAttente(chatId, outil, parametres, description) {
   ).run(chatId, outil, JSON.stringify(parametres), description);
 }
 
+// Lit l'action en attente sans la consommer (pour la completer, ex. en-tete).
+function lireActionEnAttente(chatId) {
+  const ligne = db.prepare("SELECT * FROM actions_en_attente WHERE chat_id = ?").get(chatId);
+  if (ligne) ligne.parametres = JSON.parse(ligne.parametres);
+  return ligne || null;
+}
+
 function prendreActionEnAttente(chatId) {
   const ligne = db.prepare("SELECT * FROM actions_en_attente WHERE chat_id = ?").get(chatId);
   if (ligne) {
@@ -192,6 +199,7 @@ module.exports = {
   enregistrerResume,
   derniersResumes,
   poserActionEnAttente,
+  lireActionEnAttente,
   prendreActionEnAttente,
   journaliser,
   enregistrerAppelIa,

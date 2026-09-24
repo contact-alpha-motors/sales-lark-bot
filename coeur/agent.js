@@ -1,11 +1,13 @@
+const path = require("path");
 const { converser, lireFichier } = require("../ia");
 const { construireContexte } = require("./contexte");
 const { OUTILS, schemas } = require("./outils");
 const { peutExecuter } = require("./droits");
-const { extraireFeuilleAppel, construirePlan, executerPlan, resumePlan } = require("../odoo/import_appels");
+const { extraireFeuilleAppel, construirePlan, executerPlan, resumePlan, completerEntete } = require("../odoo/import_appels");
 const {
   enregistrerMessage,
   poserActionEnAttente,
+  lireActionEnAttente,
   prendreActionEnAttente,
   journaliser,
 } = require("../memoire/base");
@@ -47,7 +49,10 @@ async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichie
       }
 
       console.log(`[agent ${chatId.slice(-6)}] fiche d'appel detectee : ${extraction.lignes.length} lignes`);
-      const plan = await construirePlan(extraction);
+      // Indice pour l'agent + la date : legende + nom de fichier (sans le
+      // prefixe horodatage). Souvent "Fiche Ben 22 septembre.pdf".
+      const indice = `${texte || ""} ${path.basename(cheminFichier).replace(/^\d+-/, "")}`;
+      const plan = await construirePlan(extraction, indice);
       poserActionEnAttente(chatId, "import_appels", plan, "Import fiche d'appel");
       return repondre(chatId, resumePlan(plan));
     }
@@ -72,6 +77,18 @@ async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichie
     fichier: cheminFichier || null,
   });
 
+  // Fiche d'appel en attente d'en-tete : l'utilisateur fournit agent + date
+  // (ex. « Ben 22/09/26 ») sans qu'on re-extraie la fiche.
+  if (texte && !CONFIRMATIONS.test(texte.trim()) && !ANNULATIONS.test(texte.trim())) {
+    const enAttente = lireActionEnAttente(chatId);
+    if (enAttente && enAttente.outil === "import_appels" && enteteInvalide(enAttente.parametres)) {
+      const plan = enAttente.parametres;
+      await completerEntete(plan, texte);
+      poserActionEnAttente(chatId, "import_appels", plan, "Import fiche d'appel");
+      return repondre(chatId, resumePlan(plan));
+    }
+  }
+
   // Une ecriture attendait-elle une confirmation dans ce chat ?
   if (texte && (CONFIRMATIONS.test(texte.trim()) || ANNULATIONS.test(texte.trim()))) {
     const attente = prendreActionEnAttente(chatId);
@@ -82,6 +99,12 @@ async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichie
 
       // Import d'une fiche d'appel : execute le plan (ecriture directe).
       if (attente.outil === "import_appels") {
+        // Garde-fou : agent/date manquants OU date aberrante (ex. vieux plan
+        // "202-08-27") -> on redemande l'en-tete au lieu d'ecrire n'importe quoi.
+        if (enteteInvalide(attente.parametres)) {
+          poserActionEnAttente(chatId, "import_appels", attente.parametres, "Import fiche d'appel");
+          return repondre(chatId, "Il me faut l'agent et une date valide (ex : « Ben 22/09/26 ») avant d'enregistrer.");
+        }
         const r = await executerPlan(attente.parametres);
         journaliser(chatId, senderId, "import_appels", { agent: attente.parametres.agent, resume: attente.parametres.resume }, r);
         let msg = `Import termine : ${r.pistes_creees} nouvelle(s) piste(s), ${r.evenements} appel(s) enregistre(s), ${r.activites} RDV cree(s).`;
@@ -148,6 +171,13 @@ async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichie
   }
 
   return repondre(chatId, "Je n'ai pas reussi a conclure cette demande, reformule ou decoupe-la.", fichierAEnvoyer);
+}
+
+// En-tete inexploitable : agent/date manquants, ou date hors d'une plage
+// plausible (protege contre un vieux plan mal date comme "202-08-27").
+function enteteInvalide(plan) {
+  const annee = plan.event_date ? Number(String(plan.event_date).slice(0, 4)) : 0;
+  return !!plan.besoin_entete || !plan.agent || !(annee >= 2024 && annee <= 2028);
 }
 
 function repondre(chatId, texte, fichier = null) {

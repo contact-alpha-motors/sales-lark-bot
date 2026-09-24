@@ -1,7 +1,7 @@
 const path = require("path");
 const { creer, rechercherLire } = require("./rpc");
 const { chercherParTelephone } = require("./requetes");
-const { normaliserTelephone, telephoneValide, analyserResultat } = require("../coeur/referentiel");
+const { normaliserTelephone, telephoneValide, analyserResultat, detecterAgent, detecterDate } = require("../coeur/referentiel");
 const { extraireFichierJson } = require("../ia");
 const { disponible: popplerDispo, pdfEnImages, nettoyer } = require("../documents/pdf_en_images");
 
@@ -91,19 +91,21 @@ function parserDateRdv(texte, anneeDefaut) {
 
 // Construit le plan sans rien ecrire : pour chaque ligne, decide creer/retrouver
 // la piste, le sous-type d'evenement, et une activite eventuelle.
-async function construirePlan(extraction) {
-  const agent = await resoudreAgent(extraction.agent);
-  // La date d'en-tete est parsee en code (JJ/MM/AA) : les modeles lisaient
-  // "22/09/26" comme 2022 et dataient les appels en 2022.
-  const dateAppels = parserDateRdv(extraction.date_appels_brut, 2026);
+async function construirePlan(extraction, indice = "") {
+  // Agent + date : d'abord l'indice (nom de fichier / legende, ex.
+  // "Fiche Ben 22 septembre"), fiable ; sinon l'en-tete de page, souvent
+  // absent ou mal lu. Si rien -> besoin_entete, on demandera a l'utilisateur.
+  const agentNom = detecterAgent(indice) || detecterAgent(extraction.agent);
+  const dateAppels = detecterDate(indice) || detecterDate(extraction.date_appels_brut);
+  const agentUser = agentNom ? await resoudreAgent(agentNom) : null;
   const anneeDefaut = dateAppels ? Number(dateAppels.slice(0, 4)) : 2026;
-  const eventDate = `${dateAppels || `${anneeDefaut}-01-01`} 12:00:00`;
 
   const plan = {
-    agent: agent ? agent.name : extraction.agent || "?",
-    agent_id: agent ? agent.id : null,
+    agent: agentNom || extraction.agent || null,
+    agent_id: agentUser ? agentUser.id : null,
     date_appels: dateAppels,
-    event_date: eventDate,
+    event_date: dateAppels ? `${dateAppels} 12:00:00` : null,
+    besoin_entete: !agentNom || !dateAppels,
     actions: [],
     ambigus: [],
     routage: [],
@@ -175,6 +177,24 @@ async function construirePlan(extraction) {
   return plan;
 }
 
+// Complete l'en-tete manquante d'un plan a partir d'un texte utilisateur
+// (ex. "Ben 22/09/26"), sans re-extraire la fiche. Renvoie true si complet.
+async function completerEntete(plan, texte) {
+  const agentNom = detecterAgent(texte);
+  const date = detecterDate(texte);
+  if (agentNom) {
+    const u = await resoudreAgent(agentNom);
+    plan.agent = agentNom;
+    plan.agent_id = u ? u.id : null;
+  }
+  if (date) {
+    plan.date_appels = date;
+    plan.event_date = `${date} 12:00:00`;
+  }
+  plan.besoin_entete = !plan.agent || !plan.date_appels;
+  return !plan.besoin_entete;
+}
+
 // Ecrit le plan dans Odoo. Chaque ligne est isolee dans son try/catch : une
 // ligne qui echoue n'emporte pas le reste de la fiche.
 async function executerPlan(plan) {
@@ -233,16 +253,24 @@ async function executerPlan(plan) {
 function resumePlan(plan) {
   const r = plan.resume;
   const lignes = [
-    `Fiche d'appel de ${plan.agent}${plan.date_appels ? ` (${plan.date_appels})` : ""} :`,
+    `Fiche d'appel${plan.agent ? ` de ${plan.agent}` : ""}${plan.date_appels ? ` (${plan.date_appels})` : ""} :`,
     `- ${r.total_lignes} lignes lues`,
     `- ${r.a_ecrire} appels a enregistrer, dont ${r.nouvelles_pistes} nouvelles pistes et ${r.rdv} RDV`,
   ];
   if (r.ambigus) lignes.push(`- ${r.ambigus} codes ambigus (PP/OUI/inconnu) NON importes`);
   if (r.routage) lignes.push(`- ${r.routage} demandes partenariat/emploi (DP/DE) NON importees`);
   if (r.invalides) lignes.push(`- ${r.invalides} numeros invalides ignores`);
+
+  // En-tete manquante : on ne propose pas d'ecrire, on demande agent + date.
+  if (plan.besoin_entete) {
+    const manque = [!plan.agent && "l'agent (Astride, Gloria ou Ben)", !plan.date_appels && "la date"].filter(Boolean).join(" et ");
+    lignes.push("", `Il me manque ${manque} : cette fiche n'a pas d'en-tete lisible. Reponds par exemple « Ben 22/09/26 » et je te montre le recap avant d'ecrire.`);
+    return lignes.join("\n");
+  }
+
   if (!plan.agent_id) lignes.push(`- ATTENTION : agent "${plan.agent}" non retrouve dans Odoo, appels non attribues`);
   lignes.push("", 'J\'enregistre tout ca dans Odoo ? Reponds "oui" pour confirmer, "non" pour annuler.');
   return lignes.join("\n");
 }
 
-module.exports = { extraireFeuilleAppel, construirePlan, executerPlan, resumePlan };
+module.exports = { extraireFeuilleAppel, construirePlan, executerPlan, resumePlan, completerEntete };
