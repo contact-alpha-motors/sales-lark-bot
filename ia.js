@@ -37,6 +37,16 @@ const TIMEOUTS = {
 
 const TENTATIVES = Number(process.env.IA_TENTATIVES || 3);
 
+// Garde-fou budget : seuls ces modeles (bon marche) peuvent etre appeles.
+// OpenRouter ne sait pas restreindre une cle a certains modeles ; on le fait
+// ici. Tout modele hors liste est refuse AVANT tout appel paye.
+const MODELES_AUTORISES = new Set(
+  (process.env.IA_MODELES_AUTORISES || "z-ai/glm-5.3-flash,google/gemini-2.5-flash-lite")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+);
+
 const MIME = {
   ".pdf": "application/pdf",
   ".jpg": "image/jpeg",
@@ -59,6 +69,14 @@ function attendre(ms) {
 
 async function appeler(tache, corps) {
   const modele = MODELES[tache];
+
+  if (!MODELES_AUTORISES.has(modele)) {
+    throw new Error(
+      `Modele non autorise par le garde-fou budget : ${modele} (tache ${tache}). ` +
+      `Autorises : ${[...MODELES_AUTORISES].join(", ")}. Ajouter via IA_MODELES_AUTORISES.`
+    );
+  }
+
   let derniereErreur;
 
   for (let tentative = 1; tentative <= TENTATIVES; tentative++) {
