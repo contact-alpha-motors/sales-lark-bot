@@ -2,6 +2,7 @@ const { converser, lireFichier } = require("../ia");
 const { construireContexte } = require("./contexte");
 const { OUTILS, schemas } = require("./outils");
 const { peutExecuter } = require("./droits");
+const { extraireFeuilleAppel, construirePlan, executerPlan, resumePlan } = require("../odoo/import_appels");
 const {
   enregistrerMessage,
   poserActionEnAttente,
@@ -25,8 +26,34 @@ const CONFIRMATIONS = /^(oui|ok|confirme|confirmer|vas-y|go|yes)\b/i;
 const ANNULATIONS = /^(non|annule|annuler|stop|no)\b/i;
 
 async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichier }) {
-  // Un fichier joint est d'abord transcrit : le texte extrait entre dans la
-  // conversation comme n'importe quel message.
+  // Fichier joint : on tente d'abord d'y lire une FICHE D'APPEL a importer
+  // (cas principal). Si ca n'en est pas une, on retombe sur la transcription.
+  if (cheminFichier) {
+    let extraction = null;
+    try {
+      extraction = await extraireFeuilleAppel(cheminFichier);
+    } catch (e) {
+      console.error(`[import] extraction fiche echouee : ${e.message}`);
+    }
+
+    if (extraction && Array.isArray(extraction.lignes) && extraction.lignes.length) {
+      enregistrerMessage({
+        message_id: messageId, chat_id: chatId, sender_id: senderId, role: "user",
+        contenu: `${texte || ""}\n[fiche d'appel jointe]`.trim(), fichier: cheminFichier,
+      });
+
+      if (!peutExecuter(senderId, "creer_lead")) {
+        return repondre(chatId, "Tu n'as pas le droit d'importer des appels dans Odoo. Contacte un responsable.");
+      }
+
+      console.log(`[agent ${chatId.slice(-6)}] fiche d'appel detectee : ${extraction.lignes.length} lignes`);
+      const plan = await construirePlan(extraction);
+      poserActionEnAttente(chatId, "import_appels", plan, "Import fiche d'appel");
+      return repondre(chatId, resumePlan(plan));
+    }
+  }
+
+  // Sinon : transcription classique du document pour la conversation.
   let contenu = texte || "";
   if (cheminFichier) {
     const extrait = await lireFichier(
@@ -52,6 +79,16 @@ async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichie
       if (ANNULATIONS.test(texte.trim())) {
         return repondre(chatId, "D'accord, j'annule. Rien n'a ete ecrit dans Odoo.");
       }
+
+      // Import d'une fiche d'appel : execute le plan (ecriture directe).
+      if (attente.outil === "import_appels") {
+        const r = await executerPlan(attente.parametres);
+        journaliser(chatId, senderId, "import_appels", { agent: attente.parametres.agent, resume: attente.parametres.resume }, r);
+        let msg = `Import termine : ${r.pistes_creees} nouvelle(s) piste(s), ${r.evenements} appel(s) enregistre(s), ${r.activites} RDV cree(s).`;
+        if (r.echecs.length) msg += ` ${r.echecs.length} ligne(s) en echec.`;
+        return repondre(chatId, msg);
+      }
+
       const outil = OUTILS[attente.outil];
       const resultat = await outil.executer(attente.parametres);
       journaliser(chatId, senderId, attente.outil, attente.parametres, resultat);

@@ -142,4 +142,40 @@ async function lireFichier(instruction, chemin) {
   return message.content || "";
 }
 
-module.exports = { converser, resumer, lireFichier };
+function nettoyerJson(brut) {
+  const bloc = brut.match(/```(?:json)?\s*([\s\S]*?)```/);
+  return (bloc ? bloc[1] : brut).trim();
+}
+
+// Lecture d'un fichier avec sortie JSON (extraction structuree). Renvoie
+// l'objet parse, ou null si le modele n'a rien renvoye d'exploitable.
+async function extraireFichierJson(instruction, chemin) {
+  const fs = require("fs");
+  const path = require("path");
+
+  const extension = path.extname(chemin).toLowerCase();
+  const mime = MIME[extension];
+  if (!mime) throw new Error(`Type de fichier non lisible : ${extension}`);
+
+  const base64 = fs.readFileSync(chemin).toString("base64");
+  const url = `data:${mime};base64,${base64}`;
+
+  const contenu =
+    mime === "application/pdf"
+      ? [{ type: "text", text: instruction }, { type: "file", file: { filename: path.basename(chemin), file_data: url } }]
+      : [{ type: "text", text: instruction }, { type: "image_url", image_url: { url } }];
+
+  const message = await appeler("VISION", {
+    messages: [{ role: "user", content: contenu }],
+    temperature: 0.1,
+    response_format: { type: "json_object" },
+  });
+
+  try {
+    return JSON.parse(nettoyerJson(message.content || "{}"));
+  } catch {
+    return null;
+  }
+}
+
+module.exports = { converser, resumer, lireFichier, extraireFichierJson };
