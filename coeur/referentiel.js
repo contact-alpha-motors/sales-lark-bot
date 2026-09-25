@@ -13,14 +13,16 @@
 
 // Variantes de saisie -> code canonique.
 const VARIANTES = {
-  NRP: ["NRP", "HRP", "NMP", "NIR", "NKP", "NBP"],
-  // NK/NA/NP = shorthand des agents pour NR (nous revient), confirme par la
-  // direction le 2026-09-25.
+  // NAP/NM = shorthand de Ben pour NRP (confirme direction 2026-09-25).
+  NRP: ["NRP", "HRP", "NMP", "NIR", "NKP", "NBP", "NAP", "NM"],
+  // NK/NA/NP = shorthand des agents pour NR (nous revient).
   NR: ["NR", "HR", "MR", "MRP", "NK", "NA", "NP"],
-  RDV: ["RDV", "PDV", "RDY"],
+  // ADV/DDV/MDV = variantes manuscrites/OCR de RDV.
+  RDV: ["RDV", "PDV", "RDY", "ADV", "DDV", "MDV"],
   PL: ["PL", "PEL"],
   PI: ["PI"],
   BL: ["BL"],
+  ND: ["ND"], // "Non Disponible" : contact etabli mais indisponible
   PP: ["PP"],
   OUI: ["OUI"],
   DP: ["DP"],
@@ -41,11 +43,13 @@ const SOUS_TYPE = {
   NR: "wiil_come_back",
   RDV: "meeting_booked",
   BL: "interested",
+  ND: "cant_call_now", // "Non Disponible"
 };
 
 // Plus le code est haut, plus il prime (une preuve de contact l'emporte sur un
-// sans-reponse). PP/OUI/DP/DE ne sont pas ici : traites a part.
-const PRIORITE = ["RDV", "NR", "PI", "BL", "PL", "NRP"];
+// sans-reponse). ND (contact mais non dispo) prime sur PL/NRP. PP/OUI/DP/DE
+// ne sont pas ici : traites a part.
+const PRIORITE = ["RDV", "NR", "PI", "BL", "ND", "PL", "NRP"];
 
 const AMBIGUS = new Set(["PP", "OUI"]);
 const ROUTAGE = new Set(["DP", "DE"]);
