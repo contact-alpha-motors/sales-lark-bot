@@ -66,6 +66,10 @@ async function extraireFeuilleAppel(chemin) {
     try { return JSON.parse(cache.extraction); } catch { /* cache corrompu -> relire */ }
   }
 
+  // Dossier persistant du corpus : on garde les images (pages) a cote du JSON,
+  // pour reentrainer/ameliorer la lecture d'ecriture plus tard.
+  const corpusDir = path.join(process.env.OCR_IMAGES_DIR || path.join(__dirname, "..", "data", "ocr_images"), hash);
+
   let resultat;
   const ext = path.extname(chemin).toLowerCase();
   if (ext === ".pdf" && (await popplerDispo())) {
@@ -75,11 +79,13 @@ async function extraireFeuilleAppel(chemin) {
         images.map((img) => extraireFichierJson(INSTRUCTION_PAGE, img).catch(() => null))
       );
       resultat = fusionnerPages(pages);
+      archiverImages(corpusDir, images);
     } finally {
       nettoyer(dossier);
     }
   } else {
     resultat = await extraireFichierJson(INSTRUCTION_PAGE, chemin);
+    archiverImages(corpusDir, [chemin]);
   }
 
   try {
@@ -95,6 +101,20 @@ async function extraireFeuilleAppel(chemin) {
   }
 
   return resultat;
+}
+
+// Copie les pages rasterisees dans le corpus persistant (best effort : ne doit
+// jamais casser l'import si le disque refuse).
+function archiverImages(dossierCible, images) {
+  try {
+    fs.mkdirSync(dossierCible, { recursive: true });
+    images.forEach((img, i) => {
+      const ext = path.extname(img) || ".png";
+      fs.copyFileSync(img, path.join(dossierCible, `page-${String(i + 1).padStart(2, "0")}${ext}`));
+    });
+  } catch (e) {
+    console.error("[ocr] archivage images:", e.message);
+  }
 }
 
 async function resoudreAgent(nom) {
