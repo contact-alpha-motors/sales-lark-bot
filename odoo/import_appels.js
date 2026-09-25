@@ -291,7 +291,7 @@ async function executerPlan(plan) {
         event_type: a.event_type,
         sub_type: a.sous_type,
         lead_id: leadId,
-        event_date: plan.event_date,
+        event_date: a.event_date || plan.event_date,
         contact_phone: a.telephone,
         notes: a.notes,
       };

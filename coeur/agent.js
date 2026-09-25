@@ -4,6 +4,7 @@ const { construireContexte } = require("./contexte");
 const { OUTILS, schemas } = require("./outils");
 const { peutExecuter } = require("./droits");
 const { extraireFeuilleAppel, construirePlan, executerPlan, resumePlan, completerEntete } = require("../odoo/import_appels");
+const { extraireFicheReception, construirePlanRelance, resumePlanRelance } = require("../odoo/import_relance");
 const {
   enregistrerMessage,
   poserActionEnAttente,
@@ -28,9 +29,34 @@ const CONFIRMATIONS = /^(oui|ok|confirme|confirmer|vas-y|go|yes)\b/i;
 const ANNULATIONS = /^(non|annule|annuler|stop|no)\b/i;
 
 async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichier }) {
-  // Fichier joint : on tente d'abord d'y lire une FICHE D'APPEL a importer
-  // (cas principal). Si ca n'en est pas une, on retombe sur la transcription.
+  // Fichier joint : on route entre FICHE DE RELANCE (receptions, tableau
+  // imprime "commerciaux") et FICHE D'APPEL (manuscrite Ben/Astride/Gloria).
+  // Le routage se fait sur la legende + nom de fichier.
   if (cheminFichier) {
+    const indice = `${texte || ""} ${path.basename(cheminFichier).replace(/^\d+-/, "")}`;
+    const type = typeParIndice(indice);
+
+    // --- Fiche de relance (receptions relancees par un commercial) ---
+    if (type === "reception") {
+      let ex = null;
+      try { ex = await extraireFicheReception(cheminFichier); } catch (e) { console.error(`[import] extraction reception : ${e.message}`); }
+      if (ex && ex.type_fiche === "reception" && Array.isArray(ex.lignes) && ex.lignes.length) {
+        enregistrerMessage({ message_id: messageId, chat_id: chatId, sender_id: senderId, role: "user", contenu: `${texte || ""}\n[fiche de relance jointe]`.trim(), fichier: cheminFichier });
+        if (!peutExecuter(senderId, "creer_lead")) return repondre(chatId, "Tu n'as pas le droit d'importer dans Odoo. Contacte un responsable.");
+        console.log(`[agent ${chatId.slice(-6)}] fiche de relance detectee : ${ex.lignes.length} lignes`);
+        let plan;
+        try { plan = await construirePlanRelance(ex, indice); }
+        catch (e) {
+          if (estErreurOdoo(e)) return repondre(chatId, `J'ai lu la fiche de relance (${ex.lignes.length} lignes) et je l'ai gardee, mais Odoo est injoignable. Renvoie-la quand il sera revenu (gratuit, deja lue).`);
+          throw e;
+        }
+        poserActionEnAttente(chatId, "import_relance", plan, "Import fiche de relance");
+        return repondre(chatId, resumePlanRelance(plan));
+      }
+      // Pas vraiment une reception -> on retombe sur la fiche d'appel.
+    }
+
+    // --- Fiche d'appel manuscrite (cas par defaut pour un document) ---
     let extraction = null;
     try {
       extraction = await extraireFeuilleAppel(cheminFichier);
@@ -49,9 +75,6 @@ async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichie
       }
 
       console.log(`[agent ${chatId.slice(-6)}] fiche d'appel detectee : ${extraction.lignes.length} lignes`);
-      // Indice pour l'agent + la date : legende + nom de fichier (sans le
-      // prefixe horodatage). Souvent "Fiche Ben 22 septembre.pdf".
-      const indice = `${texte || ""} ${path.basename(cheminFichier).replace(/^\d+-/, "")}`;
       let plan;
       try {
         plan = await construirePlan(extraction, indice);
@@ -105,11 +128,11 @@ async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichie
         return repondre(chatId, "D'accord, j'annule. Rien n'a ete ecrit dans Odoo.");
       }
 
-      // Import d'une fiche d'appel : execute le plan (ecriture directe).
-      if (attente.outil === "import_appels") {
-        // Garde-fou : agent/date manquants OU date aberrante (ex. vieux plan
-        // "202-08-27") -> on redemande l'en-tete au lieu d'ecrire n'importe quoi.
-        if (enteteInvalide(attente.parametres)) {
+      // Import d'une fiche (appel manuscrite OU relance receptions) : ecriture directe.
+      if (attente.outil === "import_appels" || attente.outil === "import_relance") {
+        // Garde-fou en-tete : uniquement pour les fiches d'appel (agent/date
+        // manuscrits). Les fiches de relance ont toujours une date par defaut.
+        if (attente.outil === "import_appels" && enteteInvalide(attente.parametres)) {
           poserActionEnAttente(chatId, "import_appels", attente.parametres, "Import fiche d'appel");
           return repondre(chatId, "Il me faut l'agent et une date valide (ex : « Ben 22/09/26 ») avant d'enregistrer.");
         }
@@ -118,13 +141,13 @@ async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichie
           r = await executerPlan(attente.parametres);
         } catch (e) {
           if (estErreurOdoo(e)) {
-            poserActionEnAttente(chatId, "import_appels", attente.parametres, "Import fiche d'appel");
+            poserActionEnAttente(chatId, attente.outil, attente.parametres, attente.description || "Import");
             return repondre(chatId, "Odoo (CRM) est injoignable, rien n'a ete enregistre. Reponds « oui » a nouveau quand il sera revenu — la fiche est gardee.");
           }
           throw e;
         }
-        journaliser(chatId, senderId, "import_appels", { agent: attente.parametres.agent, resume: attente.parametres.resume }, r);
-        let msg = `Import termine : ${r.pistes_creees} nouvelle(s) piste(s), ${r.evenements} appel(s) enregistre(s), ${r.activites} RDV cree(s).`;
+        journaliser(chatId, senderId, attente.outil, { agent: attente.parametres.agent, resume: attente.parametres.resume }, r);
+        let msg = `Import termine : ${r.pistes_creees} nouvelle(s) piste(s), ${r.evenements} appel(s)/relance(s) enregistre(s), ${r.activites} RDV/relance(s) datee(s).`;
         if (r.echecs.length) msg += ` ${r.echecs.length} ligne(s) en echec.`;
         return repondre(chatId, msg);
       }
@@ -208,6 +231,15 @@ async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichie
   }
 
   return repondre(chatId, "Je n'ai pas reussi a conclure cette demande, reformule ou decoupe-la.", fichierAEnvoyer);
+}
+
+// Routage du type de fiche d'apres la legende + le nom de fichier.
+// "commerciaux/reception/relance/rapport/<commercial>" -> fiche de relance ;
+// "ben/astride/gloria" -> fiche d'appel manuscrite ; sinon defaut fiche d'appel.
+function typeParIndice(indice) {
+  const t = (indice || "").toLowerCase();
+  if (/commerc|r[eé]cept|relance|rapport|marie|sharone/.test(t)) return "reception";
+  return "appel";
 }
 
 // Erreur due a Odoo injoignable (pour degrader proprement au lieu de casser).
