@@ -97,11 +97,12 @@ function demarrerAdaptateur({ appId, appSecret, etiquette }) {
         console.log(`[${etiquette}] reponse envoyee${reponse.fichier ? " (+fichier)" : ""}`);
       } catch (erreur) {
         console.error(`[${etiquette}] Erreur message ${message.message_id} :`, erreur);
-        await envoyerTexte(
-          client,
-          message.chat_id,
-          "Desole, une erreur m'a empeche de traiter ce message. Reessaie dans un instant."
-        ).catch(() => {});
+        // Message clair quand c'est Odoo qui est injoignable (ex. HTTP 530),
+        // pour ne pas laisser croire que le bot est casse.
+        const msg = /Odoo HTTP|Odoo:|ECONN|ETIMEDOUT|timeout|530|502|503|504/i.test(erreur?.message || "")
+          ? "Odoo est momentanement injoignable (serveur CRM). Reessaie dans quelques minutes — ce n'est pas le bot."
+          : "Desole, une erreur m'a empeche de traiter ce message. Reessaie dans un instant.";
+        await envoyerTexte(client, message.chat_id, msg).catch(() => {});
       }
     },
   });
