@@ -1,4 +1,9 @@
 const { rechercherLire, creer } = require("./rpc");
+const { mirrorLeads, chercherLeadMirror } = require("../memoire/base");
+
+function estErreurOdoo(e) {
+  return /Odoo HTTP|Odoo:|ECONN|ETIMEDOUT|timeout|530|50[234]/i.test((e && e.message) || "");
+}
 
 // ---------------------------------------------------------------------------
 // Requetes metier vers le CRM. Chaque fonction renvoie des lignes pretes a
@@ -89,12 +94,24 @@ async function chercherParTelephone(telephone) {
   }
   const domaine = Array(clauses.length - 1).fill("|").concat(clauses);
 
-  return rechercherLire(
-    "crm.lead",
-    domaine,
-    ["id", "name", "contact_name", "phone", "mobile", "stage_id", "user_id", "type"],
-    { limit: 10 }
-  );
+  try {
+    const res = await rechercherLire(
+      "crm.lead",
+      domaine,
+      ["id", "name", "contact_name", "phone", "mobile", "stage_id", "user_id", "type"],
+      { limit: 10 }
+    );
+    mirrorLeads(res); // live-first : on rafraichit le miroir avec ce qu'on lit
+    return res;
+  } catch (e) {
+    // Odoo hors ligne -> repli sur le miroir local des leads deja collectes.
+    if (estErreurOdoo(e)) {
+      const m = chercherLeadMirror(variantes);
+      console.log(`[mirror] Odoo down, repli miroir leads : ${m.length} resultat(s)`);
+      return m;
+    }
+    throw e;
+  }
 }
 
 async function creerPiste({ nom, telephone, vehicule = "", note = "", agent = "" }) {
@@ -112,6 +129,8 @@ async function creerPiste({ nom, telephone, vehicule = "", note = "", agent = ""
   }
 
   const id = await creer("crm.lead", valeurs);
+  // Le lead qu'on vient de creer entre aussi dans le miroir local.
+  mirrorLeads([{ id, name: valeurs.name, contact_name: valeurs.contact_name, phone: valeurs.phone, type: "lead" }]);
   return { id, valeurs };
 }
 

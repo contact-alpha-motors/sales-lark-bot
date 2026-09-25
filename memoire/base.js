@@ -59,6 +59,23 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
+  -- Miroir local des LEADS qu'on touche (dedup, creation, import) — pas tout
+  -- le CRM, juste ceux qu'on collecte. Sert de secours quand Odoo est hors ligne
+  -- (lecture live d'abord, miroir en repli).
+  CREATE TABLE IF NOT EXISTS leads_mirror (
+    odoo_id INTEGER PRIMARY KEY,
+    name TEXT,
+    contact_name TEXT,
+    phone TEXT,
+    mobile TEXT,
+    stage TEXT,
+    user_name TEXT,
+    type TEXT,
+    fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_leadsm_phone ON leads_mirror(phone);
+  CREATE INDEX IF NOT EXISTS idx_leadsm_mobile ON leads_mirror(mobile);
+
   -- Entrepot local des appels extraits des fiches. Chaque ligne est durable et
   -- porte son etat de synchro Odoo : on sait toujours ce qui a ete pousse.
   CREATE TABLE IF NOT EXISTS appels (
@@ -222,6 +239,39 @@ function enregistrerOcr(r) {
 function lireOcr(hash) {
   return db.prepare("SELECT * FROM ocr_cache WHERE hash = ?").get(hash) || null;
 }
+// Miroir leads : upsert de ce qu'on lit/cree dans Odoo, et recherche locale de
+// secours par telephone (variantes) quand Odoo est injoignable.
+const upLead = db.prepare(`
+  INSERT INTO leads_mirror (odoo_id, name, contact_name, phone, mobile, stage, user_name, type, fetched_at)
+  VALUES (@odoo_id, @name, @contact_name, @phone, @mobile, @stage, @user_name, @type, CURRENT_TIMESTAMP)
+  ON CONFLICT(odoo_id) DO UPDATE SET name=excluded.name, contact_name=excluded.contact_name,
+    phone=excluded.phone, mobile=excluded.mobile, stage=excluded.stage, user_name=excluded.user_name,
+    type=excluded.type, fetched_at=CURRENT_TIMESTAMP
+`);
+function mirrorLeads(rows) {
+  const tx = db.transaction((rs) => {
+    for (const r of rs) {
+      if (!r || !r.id) continue;
+      upLead.run({
+        odoo_id: r.id, name: r.name || null, contact_name: r.contact_name || null,
+        phone: r.phone || null, mobile: r.mobile || null,
+        stage: Array.isArray(r.stage_id) ? r.stage_id[1] : null,
+        user_name: Array.isArray(r.user_id) ? r.user_id[1] : null, type: r.type || null,
+      });
+    }
+  });
+  tx(rows || []);
+}
+function chercherLeadMirror(variantes) {
+  if (!variantes.length) return [];
+  const ou = variantes.map(() => "(phone LIKE ? OR mobile LIKE ?)").join(" OR ");
+  const args = [];
+  variantes.forEach((v) => args.push(`%${v}%`, `%${v}%`));
+  return db.prepare(
+    `SELECT odoo_id AS id, name, contact_name, phone, mobile, stage, user_name, type FROM leads_mirror WHERE ${ou} LIMIT 10`
+  ).all(...args);
+}
+
 // Entrepot des appels extraits + etat de synchro Odoo.
 const insAppel = db.prepare(`
   INSERT INTO appels (ocr_hash, agent, date_appel, telephone, nom, code, sous_type, commentaire, sync_state, odoo_lead_id, odoo_event_id, sync_error, synced_at)
@@ -277,4 +327,6 @@ module.exports = {
   listerFichesScannees,
   enregistrerAppel,
   statsAppels,
+  mirrorLeads,
+  chercherLeadMirror,
 };
