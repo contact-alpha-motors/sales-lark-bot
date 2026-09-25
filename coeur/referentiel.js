@@ -48,11 +48,10 @@ const SOUS_TYPE = {
 const PRIORITE = ["RDV", "NR", "PI", "BL", "PL", "NRP"];
 
 const AMBIGUS = new Set(["PP", "OUI"]);
-const ROUTAGE = new Set(["DP", "DE", "SAV"]);
+const ROUTAGE = new Set(["DP", "DE"]);
 const NOTE_ROUTAGE = {
   DP: "Demande de partenariat",
   DE: "Demande d'emploi",
-  SAV: "Demande SAV (service apres-vente)",
 };
 
 // Numeros a 8 chiffres = 6XXXXXXXX saisis sans le 6 initial. On re-prefixe.
@@ -73,6 +72,13 @@ function analyserResultat(codeResultat, commentaire = "") {
   const texte = `${codeResultat || ""} ${commentaire || ""}`.toUpperCase();
   const tokens = (codeResultat || "").toUpperCase().match(/[A-Z]+/g) || [];
   const canons = new Set(tokens.map((t) => VERS_CANON[t]).filter(Boolean));
+
+  // SAV = demande service apres-vente. On l'importe (ce n'est pas un abandon),
+  // faute de sous-type dedie on le classe "pas interesse" mais on le marque en
+  // clair dans la note ET par une etiquette crm.tag "SAV".
+  if (canons.has("SAV")) {
+    return { statut: "ok", sous_type: "not_interested", event_type: "call", canon: "SAV", note: "Demande SAV", tag: "SAV" };
+  }
 
   // Meilleur code commercial par priorite.
   const meilleur = PRIORITE.find((c) => canons.has(c));

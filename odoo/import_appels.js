@@ -120,6 +120,16 @@ function archiverImages(dossierCible, images) {
   }
 }
 
+// Trouve (ou cree une fois) une etiquette crm.tag et renvoie son id.
+const cacheTags = {};
+async function resoudreTag(nom) {
+  if (cacheTags[nom]) return cacheTags[nom];
+  const trouve = await rechercherLire("crm.tag", [["name", "=ilike", nom]], ["id"], { limit: 1 });
+  const id = trouve.length ? trouve[0].id : await creer("crm.tag", { name: nom });
+  cacheTags[nom] = id;
+  return id;
+}
+
 async function resoudreAgent(nom) {
   if (!nom) return null;
   const jeton = String(nom).trim().split(/\s+/)[0]; // "Astride AH" -> "Astride"
@@ -207,6 +217,7 @@ async function construirePlan(extraction, indice = "") {
       event_type: res.event_type,
       sous_type: res.sous_type,
       canon: res.canon,
+      tag: res.tag || null,
       notes,
       rdv: null,
     };
@@ -280,6 +291,10 @@ async function executerPlan(plan) {
         notes: a.notes,
       };
       if (plan.agent_id) evenement.user_id = plan.agent_id;
+      if (a.tag) {
+        const tagId = await resoudreTag(a.tag);
+        evenement.tag_ids = [[6, 0, [tagId]]];
+      }
       await creer("dealership.event.log", evenement);
       resultat.evenements += 1;
 
