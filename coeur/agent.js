@@ -52,7 +52,15 @@ async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichie
       // Indice pour l'agent + la date : legende + nom de fichier (sans le
       // prefixe horodatage). Souvent "Fiche Ben 22 septembre.pdf".
       const indice = `${texte || ""} ${path.basename(cheminFichier).replace(/^\d+-/, "")}`;
-      const plan = await construirePlan(extraction, indice);
+      let plan;
+      try {
+        plan = await construirePlan(extraction, indice);
+      } catch (e) {
+        if (estErreurOdoo(e)) {
+          return repondre(chatId, `J'ai lu la fiche (${extraction.lignes.length} lignes) et je l'ai gardee, mais Odoo (CRM) est injoignable pour la preparer. Renvoie-la quand Odoo sera revenu — ce sera gratuit (deja lue).`);
+        }
+        throw e;
+      }
       poserActionEnAttente(chatId, "import_appels", plan, "Import fiche d'appel");
       return repondre(chatId, resumePlan(plan));
     }
@@ -105,7 +113,16 @@ async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichie
           poserActionEnAttente(chatId, "import_appels", attente.parametres, "Import fiche d'appel");
           return repondre(chatId, "Il me faut l'agent et une date valide (ex : « Ben 22/09/26 ») avant d'enregistrer.");
         }
-        const r = await executerPlan(attente.parametres);
+        let r;
+        try {
+          r = await executerPlan(attente.parametres);
+        } catch (e) {
+          if (estErreurOdoo(e)) {
+            poserActionEnAttente(chatId, "import_appels", attente.parametres, "Import fiche d'appel");
+            return repondre(chatId, "Odoo (CRM) est injoignable, rien n'a ete enregistre. Reponds « oui » a nouveau quand il sera revenu — la fiche est gardee.");
+          }
+          throw e;
+        }
         journaliser(chatId, senderId, "import_appels", { agent: attente.parametres.agent, resume: attente.parametres.resume }, r);
         let msg = `Import termine : ${r.pistes_creees} nouvelle(s) piste(s), ${r.evenements} appel(s) enregistre(s), ${r.activites} RDV cree(s).`;
         if (r.echecs.length) msg += ` ${r.echecs.length} ligne(s) en echec.`;
@@ -113,7 +130,16 @@ async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichie
       }
 
       const outil = OUTILS[attente.outil];
-      const resultat = await outil.executer(attente.parametres);
+      let resultat;
+      try {
+        resultat = await outil.executer(attente.parametres);
+      } catch (e) {
+        if (estErreurOdoo(e)) {
+          poserActionEnAttente(chatId, attente.outil, attente.parametres, attente.description || "");
+          return repondre(chatId, "Odoo (CRM) est injoignable, l'action n'a pas eu lieu. Reponds « oui » quand il sera revenu.");
+        }
+        throw e;
+      }
       journaliser(chatId, senderId, attente.outil, attente.parametres, resultat);
       return repondre(chatId, resultat.texte, resultat.fichier);
     }
@@ -162,8 +188,19 @@ async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichie
         );
       }
 
-      // Recherche interne : execution immediate, la boucle continue.
-      const retour = await outil.executer(parametres);
+      // Recherche interne : execution immediate, la boucle continue. Une
+      // erreur (ex. Odoo down) ne casse PAS le tour : on la renvoie au modele
+      // comme resultat d'outil pour qu'il reponde utilement (mode degrade).
+      let retour;
+      try {
+        retour = await outil.executer(parametres);
+      } catch (e) {
+        retour = {
+          texte: estErreurOdoo(e)
+            ? "Odoo (CRM) est momentanement injoignable : impossible de lire cette donnee. Dis-le a l'utilisateur et propose ce que tu peux faire sans Odoo (discuter, lister les fiches deja scannees)."
+            : `Erreur de l'outil ${nom} : ${e.message}`,
+        };
+      }
       journaliser(chatId, senderId, nom, parametres, { texte: retour.texte });
       if (retour.fichier) fichierAEnvoyer = retour.fichier;
       messages.push({ role: "tool", tool_call_id: appel.id, content: retour.texte });
@@ -171,6 +208,11 @@ async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichie
   }
 
   return repondre(chatId, "Je n'ai pas reussi a conclure cette demande, reformule ou decoupe-la.", fichierAEnvoyer);
+}
+
+// Erreur due a Odoo injoignable (pour degrader proprement au lieu de casser).
+function estErreurOdoo(e) {
+  return /Odoo HTTP|Odoo:|ECONN|ETIMEDOUT|timeout|530|50[234]/i.test((e && e.message) || "");
 }
 
 // En-tete inexploitable : agent/date manquants, ou date hors d'une plage

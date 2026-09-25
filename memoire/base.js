@@ -200,6 +200,12 @@ function enregistrerOcr(r) {
 function lireOcr(hash) {
   return db.prepare("SELECT * FROM ocr_cache WHERE hash = ?").get(hash) || null;
 }
+// Liste les fiches deja scannees (local, sans Odoo) — pour le mode degrade.
+function listerFichesScannees(limite = 20) {
+  return db
+    .prepare("SELECT fichier, nb_lignes, DATE(created_at, '+1 hours') AS jour FROM ocr_cache ORDER BY created_at DESC LIMIT ?")
+    .all(Math.min(Math.max(1, limite || 20), 100));
+}
 
 // Totaux de cout modele : jour / semaine / tout, + nb d'appels.
 function coutIa() {
@@ -229,4 +235,5 @@ module.exports = {
   coutIa,
   enregistrerOcr,
   lireOcr,
+  listerFichesScannees,
 };

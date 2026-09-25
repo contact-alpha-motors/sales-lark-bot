@@ -1,5 +1,6 @@
 const requetes = require("../../odoo/requetes");
 const { interroger, compterCrm } = require("../../odoo/lecture");
+const { listerFichesScannees } = require("../../memoire/base");
 const { exporterXlsx } = require("../../documents/xlsx");
 const { exporterPdf } = require("../../documents/pdf");
 const { isoJour, enClair } = require("../dates");
@@ -148,6 +149,28 @@ const OUTILS = {
       const lignes = await interroger(p);
       if (!lignes.length) return { texte: "Aucun resultat pour cette requete." };
       return { texte: `${lignes.length} resultat(s) :\n${JSON.stringify(lignes)}` };
+    },
+  },
+
+  fiches_scannees: {
+    ecriture: false,
+    confirmer: false,
+    schema: {
+      type: "function",
+      function: {
+        name: "fiches_scannees",
+        description:
+          "Liste les fiches d'appel deja scannees et gardees en local (nom, nb de lignes, date). Fonctionne SANS Odoo — utilise-le pour dire ce qui a ete lu recemment, meme si le CRM est injoignable.",
+        parameters: {
+          type: "object",
+          properties: { limite: { type: "number", description: "Nombre max de fiches, defaut 20" } },
+        },
+      },
+    },
+    async executer(p) {
+      const l = listerFichesScannees(p.limite || 20);
+      if (!l.length) return { texte: "Aucune fiche scannee en memoire locale." };
+      return { texte: l.map((x) => `${x.jour} — ${x.fichier} (${x.nb_lignes} lignes)`).join("\n") };
     },
   },
 
