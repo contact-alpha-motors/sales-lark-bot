@@ -24,16 +24,19 @@ const TYPE_ACTIVITE_RDV = Number(process.env.ODOO_ACTIVITY_MEETING_ID || 3); // 
 // appel avec 5 images — qui faisait expirer le modele.
 const INSTRUCTION_PAGE = `Ceci est UNE page d'une FICHE D'APPEL manuscrite d'Alpha Motors (concession auto).
 L'EN-TETE de page donne l'agent qui a passe les appels et la date. Chaque LIGNE du tableau = un appel a un prospect.
+C'est une liste de RE-LANCE : chaque ligne est un prospect deja contacte avant. La colonne "personne ayant appele" est l'agent qui a appele LA FOIS PRECEDENTE (historique), avec la date et le resultat de ce contact precedent. Le resultat de l'appel ACTUEL est le code manuscrit du jour.
 Renvoie UNIQUEMENT du JSON, cette forme exacte :
 {
-  "agent": "<nom en en-tete de page>",
-  "date_appels_brut": "<texte brut de la date en en-tete, ex '22/09/26'>",
+  "agent": "<nom en en-tete de page, ou ''>",
+  "date_appels_brut": "<texte brut de la date en en-tete, ex '22/09/26', ou ''>",
   "lignes": [
     {
       "nom": "<nom du prospect ou ''>",
       "telephone": "<chiffres du numero>",
-      "statut_precedent": "<colonne statut imprimee ou ''>",
-      "code_resultat": "<le code manuscrit du resultat: PP, PI, NR, NRP, RDV, BL, OUI, PL, PEL...>",
+      "appelant_precedent": "<nom de la personne ayant appele la fois precedente, ou ''>",
+      "date_derniere_action": "<date du dernier contact precedent, ou ''>",
+      "statut_precedent": "<resultat de la derniere action / statut imprime, ou ''>",
+      "code_resultat": "<le code manuscrit du resultat de l'appel ACTUEL: PP, PI, NR, NRP, RDV, BL, OUI, PL...>",
       "commentaire": "<le commentaire manuscrit ou ''>",
       "rdv_texte": "<date/heure de RDV si mentionnee, sinon ''>",
       "vehicule": "<vehicule si mentionne ou ''>"
@@ -180,11 +183,19 @@ async function construirePlan(extraction, indice = "") {
     const existantes = await chercherParTelephone(tel);
     const piste = existantes[0] || null;
 
+    // Contexte du contact PRECEDENT (liste de relance) -> garde comme historique.
+    const prec = [];
+    if (ligne.appelant_precedent) prec.push(`par ${ligne.appelant_precedent}`);
+    if (ligne.date_derniere_action) prec.push(`le ${ligne.date_derniere_action}`);
+    if (ligne.statut_precedent) prec.push(`resultat ${ligne.statut_precedent}`);
+    const precedent = prec.length ? `Precedent: ${prec.join(" ")}` : "";
+
     const notes = [
       ligne.commentaire || "",
       res.note ? `[${res.note}]` : "",
       ligne.vehicule ? `Vehicule: ${ligne.vehicule}` : "",
-      `(fiche ${plan.agent} ${plan.date_appels || ""})`,
+      precedent,
+      `(fiche ${plan.agent || "?"} ${plan.date_appels || ""})`,
     ].filter(Boolean).join(" ").trim();
 
     const action = {
