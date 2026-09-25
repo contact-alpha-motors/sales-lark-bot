@@ -2,7 +2,7 @@ const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
 const { creer, rechercherLire } = require("./rpc");
-const { enregistrerOcr, lireOcr, enregistrerAppel } = require("../memoire/base");
+const { enregistrerOcr, lireOcr, enregistrerAppel, mirrorLeads } = require("../memoire/base");
 const { chercherParTelephone } = require("./requetes");
 const { normaliserTelephone, telephoneValide, analyserResultat, detecterAgent, detecterDate } = require("../coeur/referentiel");
 const { extraireFichierJson } = require("../ia");
@@ -285,6 +285,8 @@ async function executerPlan(plan) {
           type: "lead",
         });
         resultat.pistes_creees += 1;
+        // La piste creee entre aussi dans le miroir local.
+        mirrorLeads([{ id: leadId, name: a.nom, contact_name: a.nom, phone: a.telephone, type: "lead" }]);
       }
 
       const evenement = {
