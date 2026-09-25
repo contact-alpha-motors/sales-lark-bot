@@ -47,6 +47,18 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
+  -- Cache + jeu de donnees des lectures OCR. Chaque fichier est hache : on ne
+  -- relit jamais deux fois le meme scan (economie), et on accumule un corpus
+  -- scan->resultat pour ameliorer la reconnaissance de l'ecriture avec le temps.
+  CREATE TABLE IF NOT EXISTS ocr_cache (
+    hash TEXT PRIMARY KEY,
+    fichier TEXT,
+    extraction TEXT,
+    modele TEXT,
+    nb_lignes INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
   -- Telemetrie de chaque appel modele : tokens, cout, duree. Budget serre :
   -- on veut voir a la trace ce que chaque requete coute.
   CREATE TABLE IF NOT EXISTS journal_ia (
@@ -178,6 +190,17 @@ function enregistrerAppelIa(r) {
   });
 }
 
+const insOcr = db.prepare(`
+  INSERT OR REPLACE INTO ocr_cache (hash, fichier, extraction, modele, nb_lignes)
+  VALUES (@hash, @fichier, @extraction, @modele, @nb_lignes)
+`);
+function enregistrerOcr(r) {
+  insOcr.run({ fichier: null, modele: null, nb_lignes: null, ...r });
+}
+function lireOcr(hash) {
+  return db.prepare("SELECT * FROM ocr_cache WHERE hash = ?").get(hash) || null;
+}
+
 // Totaux de cout modele : jour / semaine / tout, + nb d'appels.
 function coutIa() {
   const q = (where) =>
@@ -204,4 +227,6 @@ module.exports = {
   journaliser,
   enregistrerAppelIa,
   coutIa,
+  enregistrerOcr,
+  lireOcr,
 };

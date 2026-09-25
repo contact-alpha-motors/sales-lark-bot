@@ -1,5 +1,8 @@
 const path = require("path");
+const fs = require("fs");
+const crypto = require("crypto");
 const { creer, rechercherLire } = require("./rpc");
+const { enregistrerOcr, lireOcr } = require("../memoire/base");
 const { chercherParTelephone } = require("./requetes");
 const { normaliserTelephone, telephoneValide, analyserResultat, detecterAgent, detecterDate } = require("../coeur/referentiel");
 const { extraireFichierJson } = require("../ia");
@@ -53,21 +56,45 @@ function fusionnerPages(pages) {
 // parallele. Une image seule est lue directement. Une page qui echoue est
 // simplement ignoree, le reste de la fiche passe quand meme.
 async function extraireFeuilleAppel(chemin) {
-  const ext = path.extname(chemin).toLowerCase();
+  // Cache par empreinte du fichier : on ne relit jamais deux fois le meme
+  // scan (economie), et chaque lecture alimente le corpus ocr_cache.
+  const octets = fs.readFileSync(chemin);
+  const hash = crypto.createHash("sha256").update(octets).digest("hex");
+  const cache = lireOcr(hash);
+  if (cache) {
+    console.log(`[ocr] cache hit ${hash.slice(0, 8)} (${cache.nb_lignes} lignes, 0 cout)`);
+    try { return JSON.parse(cache.extraction); } catch { /* cache corrompu -> relire */ }
+  }
 
+  let resultat;
+  const ext = path.extname(chemin).toLowerCase();
   if (ext === ".pdf" && (await popplerDispo())) {
     const { images, dossier } = await pdfEnImages(chemin);
     try {
       const pages = await Promise.all(
         images.map((img) => extraireFichierJson(INSTRUCTION_PAGE, img).catch(() => null))
       );
-      return fusionnerPages(pages);
+      resultat = fusionnerPages(pages);
     } finally {
       nettoyer(dossier);
     }
+  } else {
+    resultat = await extraireFichierJson(INSTRUCTION_PAGE, chemin);
   }
 
-  return extraireFichierJson(INSTRUCTION_PAGE, chemin);
+  try {
+    enregistrerOcr({
+      hash,
+      fichier: path.basename(chemin).replace(/^\d+-/, ""),
+      extraction: JSON.stringify(resultat || {}),
+      modele: process.env.IA_MODELE_VISION || "",
+      nb_lignes: resultat && resultat.lignes ? resultat.lignes.length : 0,
+    });
+  } catch (e) {
+    console.error("[ocr] ecriture cache:", e.message);
+  }
+
+  return resultat;
 }
 
 async function resoudreAgent(nom) {
@@ -258,7 +285,7 @@ function resumePlan(plan) {
     `- ${r.a_ecrire} appels a enregistrer, dont ${r.nouvelles_pistes} nouvelles pistes et ${r.rdv} RDV`,
   ];
   if (r.ambigus) lignes.push(`- ${r.ambigus} codes ambigus (PP/OUI/inconnu) NON importes`);
-  if (r.routage) lignes.push(`- ${r.routage} demandes partenariat/emploi (DP/DE) NON importees`);
+  if (r.routage) lignes.push(`- ${r.routage} demandes hors-commercial (DP/DE/SAV) NON importees`);
   if (r.invalides) lignes.push(`- ${r.invalides} numeros invalides ignores`);
 
   // En-tete manquante : on ne propose pas d'ecrire, on demande agent + date.

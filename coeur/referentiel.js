@@ -14,7 +14,9 @@
 // Variantes de saisie -> code canonique.
 const VARIANTES = {
   NRP: ["NRP", "HRP", "NMP", "NIR", "NKP", "NBP"],
-  NR: ["NR", "HR", "MR", "MRP"],
+  // NK/NA/NP = shorthand des agents pour NR (nous revient), confirme par la
+  // direction le 2026-09-25.
+  NR: ["NR", "HR", "MR", "MRP", "NK", "NA", "NP"],
   RDV: ["RDV", "PDV", "RDY"],
   PL: ["PL", "PEL"],
   PI: ["PI"],
@@ -23,6 +25,7 @@ const VARIANTES = {
   OUI: ["OUI"],
   DP: ["DP"],
   DE: ["DE"],
+  SAV: ["SAV"], // demande service apres-vente : hors circuit commercial
 };
 
 const VERS_CANON = {};
@@ -45,7 +48,12 @@ const SOUS_TYPE = {
 const PRIORITE = ["RDV", "NR", "PI", "BL", "PL", "NRP"];
 
 const AMBIGUS = new Set(["PP", "OUI"]);
-const ROUTAGE = new Set(["DP", "DE"]);
+const ROUTAGE = new Set(["DP", "DE", "SAV"]);
+const NOTE_ROUTAGE = {
+  DP: "Demande de partenariat",
+  DE: "Demande d'emploi",
+  SAV: "Demande SAV (service apres-vente)",
+};
 
 // Numeros a 8 chiffres = 6XXXXXXXX saisis sans le 6 initial. On re-prefixe.
 function normaliserTelephone(brut) {
@@ -86,7 +94,7 @@ function analyserResultat(codeResultat, commentaire = "") {
 
   if ([...canons].some((c) => ROUTAGE.has(c))) {
     const c = [...canons].find((x) => ROUTAGE.has(x));
-    return { statut: "routage", canon: c, note: c === "DP" ? "Demande de partenariat" : "Demande d'emploi" };
+    return { statut: "routage", canon: c, note: NOTE_ROUTAGE[c] || "Hors commercial" };
   }
 
   // Formes ECRITES (pas un code) qui signifient "pas joignable" = PL.
