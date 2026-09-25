@@ -12,7 +12,20 @@ async function modeleId(technique) {
   if (technique === "crm.lead") _idCrmLead = id;
   return id;
 }
-const { enregistrerOcr, lireOcr, enregistrerAppel, mirrorLeads } = require("../memoire/base");
+const { enregistrerOcr, lireOcr, enregistrerAppel, mirrorLeads, trouverAppelSynced, marquerActiviteFaite } = require("../memoire/base");
+
+// Cree l'activite de suivi (RDV/rappel) d'une ligne. Champs obligatoires Odoo :
+// res_model_id (id ir.model), res_id, date_deadline, user_id.
+async function creerActivite(leadId, a, plan) {
+  return creer("mail.activity", {
+    res_model_id: await modeleId("crm.lead"),
+    res_id: leadId,
+    activity_type_id: TYPE_ACTIVITE_RDV,
+    date_deadline: a.rdv.date,
+    summary: a.rdv.resume,
+    user_id: plan.agent_id || (await uid()),
+  });
+}
 const { chercherParTelephone } = require("./requetes");
 const { normaliserTelephone, telephoneValide, analyserResultat, detecterAgent, detecterDate } = require("../coeur/referentiel");
 const { extraireFichierJson } = require("../ia");
@@ -279,13 +292,32 @@ async function completerEntete(plan, texte) {
 // Ecrit le plan dans Odoo. Chaque ligne est isolee dans son try/catch : une
 // ligne qui echoue n'emporte pas le reste de la fiche.
 async function executerPlan(plan) {
-  const resultat = { pistes_creees: 0, evenements: 0, activites: 0, echecs: [] };
+  const resultat = { pistes_creees: 0, evenements: 0, activites: 0, deja_synced: 0, echecs: [] };
 
   for (const a of plan.actions) {
+    // --- Garde-fou idempotence : ligne (meme scan + tel) deja synchronisee ? ---
+    const dejaSync = trouverAppelSynced(plan.ocr_hash, a.telephone);
+    if (dejaSync) {
+      resultat.deja_synced += 1;
+      // On NE recree PAS piste+evenement. On rattrape seulement une activite
+      // manquante (RDV/rappel) si elle n'a pas encore ete creee (backfill).
+      if (a.rdv && !dejaSync.activite_ok && dejaSync.odoo_lead_id) {
+        try {
+          await creerActivite(dejaSync.odoo_lead_id, a, plan);
+          marquerActiviteFaite(dejaSync.id);
+          resultat.activites += 1;
+        } catch (e) {
+          resultat.echecs.push({ telephone: a.telephone, etape: "activite(backfill)", erreur: e.message });
+        }
+      }
+      continue;
+    }
+
     let leadId = a.piste_id;
     let eventId = null;
     let etat = "synced";
     let err = null;
+    let activiteOk = 0;
     try {
       if (!leadId) {
         leadId = await creer("crm.lead", {
@@ -295,7 +327,6 @@ async function executerPlan(plan) {
           type: "lead",
         });
         resultat.pistes_creees += 1;
-        // La piste creee entre aussi dans le miroir local.
         mirrorLeads([{ id: leadId, name: a.nom, contact_name: a.nom, phone: a.telephone, type: "lead" }]);
       }
 
@@ -316,21 +347,12 @@ async function executerPlan(plan) {
       resultat.evenements += 1;
 
       if (a.rdv) {
-        // mail.activity exige res_model_id (id ir.model), res_id, date_deadline
-        // ET user_id. On met l'agent, sinon l'utilisateur connecte par defaut.
-        const activite = {
-          res_model_id: await modeleId("crm.lead"),
-          res_id: leadId,
-          activity_type_id: TYPE_ACTIVITE_RDV,
-          date_deadline: a.rdv.date,
-          summary: a.rdv.resume,
-          user_id: plan.agent_id || (await uid()),
-        };
         try {
-          await creer("mail.activity", activite);
+          await creerActivite(leadId, a, plan);
           resultat.activites += 1;
+          activiteOk = 1;
         } catch (e) {
-          // L'activite est un bonus : son echec ne doit pas perdre l'evenement.
+          // L'activite est un bonus : son echec ne perd pas l'evenement.
           resultat.echecs.push({ telephone: a.telephone, etape: "activite", erreur: e.message });
         }
       }
@@ -346,7 +368,7 @@ async function executerPlan(plan) {
         ocr_hash: plan.ocr_hash, agent: plan.agent, date_appel: plan.date_appels,
         telephone: a.telephone, nom: a.nom, code: a.canon, sous_type: a.sous_type,
         commentaire: a.notes, sync_state: etat, odoo_lead_id: leadId || null,
-        odoo_event_id: eventId, sync_error: err,
+        odoo_event_id: eventId, rdv_date: a.rdv ? a.rdv.date : null, activite_ok: activiteOk, sync_error: err,
       });
     } catch (e2) {
       console.error("[appels] enregistrement local:", e2.message);

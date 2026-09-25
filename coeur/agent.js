@@ -148,6 +148,7 @@ async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichie
         }
         journaliser(chatId, senderId, attente.outil, { agent: attente.parametres.agent, resume: attente.parametres.resume }, r);
         let msg = `Import termine : ${r.pistes_creees} nouvelle(s) piste(s), ${r.evenements} appel(s)/relance(s) enregistre(s), ${r.activites} RDV/relance(s) datee(s).`;
+        if (r.deja_synced) msg += ` ${r.deja_synced} deja synchronisee(s) (ignorees, pas de doublon).`;
         if (r.echecs.length) msg += ` ${r.echecs.length} ligne(s) en echec.`;
         return repondre(chatId, msg);
       }

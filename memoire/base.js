@@ -91,12 +91,15 @@ db.exec(`
     sync_state TEXT NOT NULL DEFAULT 'pending',
     odoo_lead_id INTEGER,
     odoo_event_id INTEGER,
+    rdv_date TEXT,
+    activite_ok INTEGER DEFAULT 0,
     sync_error TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     synced_at DATETIME
   );
   CREATE INDEX IF NOT EXISTS idx_appels_tel ON appels(telephone);
   CREATE INDEX IF NOT EXISTS idx_appels_sync ON appels(sync_state);
+  CREATE INDEX IF NOT EXISTS idx_appels_hash ON appels(ocr_hash, telephone);
 
   -- Telemetrie de chaque appel modele : tokens, cout, duree. Budget serre :
   -- on veut voir a la trace ce que chaque requete coute.
@@ -124,6 +127,15 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 `);
+
+// Migrations douces : ajoute les colonnes aux bases existantes (le CREATE ne
+// modifie pas une table deja creee). Ignore si la colonne existe deja.
+for (const sql of [
+  "ALTER TABLE appels ADD COLUMN rdv_date TEXT",
+  "ALTER TABLE appels ADD COLUMN activite_ok INTEGER DEFAULT 0",
+]) {
+  try { db.exec(sql); } catch { /* colonne deja presente */ }
+}
 
 const insererMessage = db.prepare(`
   INSERT OR IGNORE INTO messages (message_id, chat_id, sender_id, role, contenu, fichier)
@@ -274,19 +286,29 @@ function chercherLeadMirror(variantes) {
 
 // Entrepot des appels extraits + etat de synchro Odoo.
 const insAppel = db.prepare(`
-  INSERT INTO appels (ocr_hash, agent, date_appel, telephone, nom, code, sous_type, commentaire, sync_state, odoo_lead_id, odoo_event_id, sync_error, synced_at)
-  VALUES (@ocr_hash, @agent, @date_appel, @telephone, @nom, @code, @sous_type, @commentaire, @sync_state, @odoo_lead_id, @odoo_event_id, @sync_error,
+  INSERT INTO appels (ocr_hash, agent, date_appel, telephone, nom, code, sous_type, commentaire, sync_state, odoo_lead_id, odoo_event_id, rdv_date, activite_ok, sync_error, synced_at)
+  VALUES (@ocr_hash, @agent, @date_appel, @telephone, @nom, @code, @sous_type, @commentaire, @sync_state, @odoo_lead_id, @odoo_event_id, @rdv_date, @activite_ok, @sync_error,
           CASE WHEN @sync_state='synced' THEN CURRENT_TIMESTAMP ELSE NULL END)
 `);
 function enregistrerAppel(r) {
   return Number(insAppel.run({
     ocr_hash: null, agent: null, date_appel: null, telephone: null, nom: null, code: null,
     sous_type: null, commentaire: null, sync_state: "pending", odoo_lead_id: null,
-    odoo_event_id: null, sync_error: null, ...r,
+    odoo_event_id: null, rdv_date: null, activite_ok: 0, sync_error: null, ...r,
   }).lastInsertRowid);
 }
 function statsAppels() {
   return db.prepare("SELECT sync_state, COUNT(*) n FROM appels GROUP BY sync_state").all();
+}
+// Idempotence : une ligne (meme scan + meme telephone) deja synchronisee.
+function trouverAppelSynced(ocrHash, telephone) {
+  if (!ocrHash || !telephone) return null;
+  return db.prepare(
+    "SELECT id, odoo_lead_id, activite_ok FROM appels WHERE ocr_hash = ? AND telephone = ? AND sync_state = 'synced' ORDER BY id DESC LIMIT 1"
+  ).get(ocrHash, telephone) || null;
+}
+function marquerActiviteFaite(id) {
+  db.prepare("UPDATE appels SET activite_ok = 1 WHERE id = ?").run(id);
 }
 
 // Liste les fiches deja scannees (local, sans Odoo) — pour le mode degrade.
@@ -327,6 +349,8 @@ module.exports = {
   listerFichesScannees,
   enregistrerAppel,
   statsAppels,
+  trouverAppelSynced,
+  marquerActiviteFaite,
   mirrorLeads,
   chercherLeadMirror,
 };
