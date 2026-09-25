@@ -75,4 +75,4 @@ function mettreAJour(modele, id, valeurs) {
   return executer(modele, "write", [[id], valeurs]);
 }
 
-module.exports = { executer, rechercherLire, compter, creer, mettreAJour };
+module.exports = { executer, rechercherLire, compter, creer, mettreAJour, uid };

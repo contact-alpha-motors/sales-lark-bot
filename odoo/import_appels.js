@@ -1,7 +1,17 @@
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
-const { creer, rechercherLire } = require("./rpc");
+const { creer, rechercherLire, uid } = require("./rpc");
+
+// ir.model id d'un modele (mail.activity exige res_model_id, pas la chaine).
+let _idCrmLead = null;
+async function modeleId(technique) {
+  if (technique === "crm.lead" && _idCrmLead) return _idCrmLead;
+  const m = await rechercherLire("ir.model", [["model", "=", technique]], ["id"], { limit: 1 });
+  const id = m.length ? m[0].id : null;
+  if (technique === "crm.lead") _idCrmLead = id;
+  return id;
+}
 const { enregistrerOcr, lireOcr, enregistrerAppel, mirrorLeads } = require("../memoire/base");
 const { chercherParTelephone } = require("./requetes");
 const { normaliserTelephone, telephoneValide, analyserResultat, detecterAgent, detecterDate } = require("../coeur/referentiel");
@@ -306,14 +316,16 @@ async function executerPlan(plan) {
       resultat.evenements += 1;
 
       if (a.rdv) {
+        // mail.activity exige res_model_id (id ir.model), res_id, date_deadline
+        // ET user_id. On met l'agent, sinon l'utilisateur connecte par defaut.
         const activite = {
-          res_model: "crm.lead",
+          res_model_id: await modeleId("crm.lead"),
           res_id: leadId,
           activity_type_id: TYPE_ACTIVITE_RDV,
           date_deadline: a.rdv.date,
           summary: a.rdv.resume,
+          user_id: plan.agent_id || (await uid()),
         };
-        if (plan.agent_id) activite.user_id = plan.agent_id;
         try {
           await creer("mail.activity", activite);
           resultat.activites += 1;
