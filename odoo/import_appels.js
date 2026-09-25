@@ -2,7 +2,7 @@ const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
 const { creer, rechercherLire } = require("./rpc");
-const { enregistrerOcr, lireOcr } = require("../memoire/base");
+const { enregistrerOcr, lireOcr, enregistrerAppel } = require("../memoire/base");
 const { chercherParTelephone } = require("./requetes");
 const { normaliserTelephone, telephoneValide, analyserResultat, detecterAgent, detecterDate } = require("../coeur/referentiel");
 const { extraireFichierJson } = require("../ia");
@@ -66,7 +66,7 @@ async function extraireFeuilleAppel(chemin) {
   const cache = lireOcr(hash);
   if (cache) {
     console.log(`[ocr] cache hit ${hash.slice(0, 8)} (${cache.nb_lignes} lignes, 0 cout)`);
-    try { return JSON.parse(cache.extraction); } catch { /* cache corrompu -> relire */ }
+    try { const r = JSON.parse(cache.extraction); r.hash = hash; return r; } catch { /* cache corrompu -> relire */ }
   }
 
   // Dossier persistant du corpus : on garde les images (pages) a cote du JSON,
@@ -91,6 +91,7 @@ async function extraireFeuilleAppel(chemin) {
     archiverImages(corpusDir, [chemin]);
   }
 
+  if (resultat) resultat.hash = hash;
   try {
     enregistrerOcr({
       hash,
@@ -161,6 +162,7 @@ async function construirePlan(extraction, indice = "") {
   const anneeDefaut = dateAppels ? Number(dateAppels.slice(0, 4)) : 2026;
 
   const plan = {
+    ocr_hash: extraction.hash || null,
     agent: agentNom || extraction.agent || null,
     agent_id: agentUser ? agentUser.id : null,
     date_appels: dateAppels,
@@ -270,8 +272,11 @@ async function executerPlan(plan) {
   const resultat = { pistes_creees: 0, evenements: 0, activites: 0, echecs: [] };
 
   for (const a of plan.actions) {
+    let leadId = a.piste_id;
+    let eventId = null;
+    let etat = "synced";
+    let err = null;
     try {
-      let leadId = a.piste_id;
       if (!leadId) {
         leadId = await creer("crm.lead", {
           name: a.nom || `Prospect ${a.telephone}`,
@@ -295,7 +300,7 @@ async function executerPlan(plan) {
         const tagId = await resoudreTag(a.tag);
         evenement.tag_ids = [[6, 0, [tagId]]];
       }
-      await creer("dealership.event.log", evenement);
+      eventId = await creer("dealership.event.log", evenement);
       resultat.evenements += 1;
 
       if (a.rdv) {
@@ -316,7 +321,21 @@ async function executerPlan(plan) {
         }
       }
     } catch (e) {
+      etat = "error";
+      err = e.message;
       resultat.echecs.push({ telephone: a.telephone, etape: "evenement", erreur: e.message });
+    }
+
+    // Trace locale durable + etat de synchro (entrepot SQLite).
+    try {
+      enregistrerAppel({
+        ocr_hash: plan.ocr_hash, agent: plan.agent, date_appel: plan.date_appels,
+        telephone: a.telephone, nom: a.nom, code: a.canon, sous_type: a.sous_type,
+        commentaire: a.notes, sync_state: etat, odoo_lead_id: leadId || null,
+        odoo_event_id: eventId, sync_error: err,
+      });
+    } catch (e2) {
+      console.error("[appels] enregistrement local:", e2.message);
     }
   }
 

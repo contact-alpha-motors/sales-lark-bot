@@ -59,6 +59,28 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
+  -- Entrepot local des appels extraits des fiches. Chaque ligne est durable et
+  -- porte son etat de synchro Odoo : on sait toujours ce qui a ete pousse.
+  CREATE TABLE IF NOT EXISTS appels (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ocr_hash TEXT,
+    agent TEXT,
+    date_appel TEXT,
+    telephone TEXT,
+    nom TEXT,
+    code TEXT,
+    sous_type TEXT,
+    commentaire TEXT,
+    sync_state TEXT NOT NULL DEFAULT 'pending',
+    odoo_lead_id INTEGER,
+    odoo_event_id INTEGER,
+    sync_error TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    synced_at DATETIME
+  );
+  CREATE INDEX IF NOT EXISTS idx_appels_tel ON appels(telephone);
+  CREATE INDEX IF NOT EXISTS idx_appels_sync ON appels(sync_state);
+
   -- Telemetrie de chaque appel modele : tokens, cout, duree. Budget serre :
   -- on veut voir a la trace ce que chaque requete coute.
   CREATE TABLE IF NOT EXISTS journal_ia (
@@ -200,6 +222,23 @@ function enregistrerOcr(r) {
 function lireOcr(hash) {
   return db.prepare("SELECT * FROM ocr_cache WHERE hash = ?").get(hash) || null;
 }
+// Entrepot des appels extraits + etat de synchro Odoo.
+const insAppel = db.prepare(`
+  INSERT INTO appels (ocr_hash, agent, date_appel, telephone, nom, code, sous_type, commentaire, sync_state, odoo_lead_id, odoo_event_id, sync_error, synced_at)
+  VALUES (@ocr_hash, @agent, @date_appel, @telephone, @nom, @code, @sous_type, @commentaire, @sync_state, @odoo_lead_id, @odoo_event_id, @sync_error,
+          CASE WHEN @sync_state='synced' THEN CURRENT_TIMESTAMP ELSE NULL END)
+`);
+function enregistrerAppel(r) {
+  return Number(insAppel.run({
+    ocr_hash: null, agent: null, date_appel: null, telephone: null, nom: null, code: null,
+    sous_type: null, commentaire: null, sync_state: "pending", odoo_lead_id: null,
+    odoo_event_id: null, sync_error: null, ...r,
+  }).lastInsertRowid);
+}
+function statsAppels() {
+  return db.prepare("SELECT sync_state, COUNT(*) n FROM appels GROUP BY sync_state").all();
+}
+
 // Liste les fiches deja scannees (local, sans Odoo) — pour le mode degrade.
 function listerFichesScannees(limite = 20) {
   return db
@@ -236,4 +275,6 @@ module.exports = {
   enregistrerOcr,
   lireOcr,
   listerFichesScannees,
+  enregistrerAppel,
+  statsAppels,
 };
