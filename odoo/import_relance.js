@@ -2,7 +2,7 @@ const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
 const { rechercherLire } = require("./rpc");
-const { chercherParTelephone } = require("./requetes");
+const { chercherParTelephone, resoudreUtilisateur } = require("./requetes");
 const { normaliserTelephone, telephoneValide, detecterDate } = require("../coeur/referentiel");
 const { extraireFichierJson } = require("../ia");
 const { enregistrerOcr, lireOcr } = require("../memoire/base");
@@ -42,6 +42,7 @@ Renvoie UNIQUEMENT du JSON, cette forme exacte :
       "date_reception": "<Date de reception imprimee>",
       "origine": "<colonne Origine>",
       "vehicules": "<colonne Vehicules d'interet>",
+      "agent_ligne": "<valeur de la colonne 'Agent charge de l'appel' pour cette ligne>",
       "commentaire": "<le commentaire MANUSCRIT, transcrit fidelement>"
     }
   ]
@@ -129,13 +130,7 @@ async function extraireFicheReception(chemin) {
   return resultat;
 }
 
-async function resoudreAgent(nom) {
-  if (!nom) return null;
-  const jeton = String(nom).trim().split(/\s+/)[0];
-  if (!jeton) return null;
-  const u = await rechercherLire("res.users", [["name", "ilike", jeton]], ["id", "name"], { limit: 1 });
-  return u.length ? u[0] : null;
-}
+const resoudreAgent = resoudreUtilisateur;
 
 async function construirePlanRelance(extraction, indice = "") {
   const agentUser = await resoudreAgent(extraction.agent);
@@ -168,6 +163,9 @@ async function construirePlanRelance(extraction, indice = "") {
     // Date d'appel = date de session griffonnee sur la page ; sinon l'indice
     // (legende/nom de fichier) ; sinon rien (on demandera).
     const dateSession = detecterDate(ligne.date_session_brut) || detecterDate(indice);
+    // Agent PAR LIGNE (colonne "Agent charge de l'appel") : gere les paquets
+    // multi-commerciaux. A defaut, l'agent du titre.
+    const agentLigne = ligne.agent_ligne ? await resoudreAgent(ligne.agent_ligne) : null;
     const existantes = await chercherParTelephone(tel);
     const piste = existantes[0] || null;
 
@@ -190,6 +188,7 @@ async function construirePlanRelance(extraction, indice = "") {
       event_type: res.event_type,
       sous_type: res.sous_type,
       event_date: dateSession ? `${dateSession} 12:00:00` : null,
+      agent_id: agentLigne ? agentLigne.id : null,
       notes,
       rdv: null,
     };

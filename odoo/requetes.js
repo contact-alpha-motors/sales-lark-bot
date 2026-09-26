@@ -5,6 +5,28 @@ function estErreurOdoo(e) {
   return /Odoo HTTP|Odoo:|ECONN|ETIMEDOUT|timeout|530|50[234]/i.test((e && e.message) || "");
 }
 
+// Resout un nom d'agent/commercial (souvent "MARIE-SHARONE", "Astride"...) vers
+// un utilisateur Odoo. Robuste : normalise les tirets, essaie le nom complet
+// puis les tokens distinctifs. Mis en cache par nom (les users ne bougent pas).
+const _cacheUsers = {};
+async function resoudreUtilisateur(nom) {
+  if (!nom) return null;
+  const propre = String(nom).replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!propre) return null;
+  if (Object.prototype.hasOwnProperty.call(_cacheUsers, propre)) return _cacheUsers[propre];
+
+  const tokens = propre.split(" ").filter((t) => t.length >= 4).sort((a, b) => b.length - a.length);
+  const essais = [propre, ...tokens, propre.split(" ")[0]];
+  let found = null;
+  for (const t of essais) {
+    if (!t) continue;
+    const u = await rechercherLire("res.users", [["name", "ilike", t]], ["id", "name"], { limit: 1 });
+    if (u.length) { found = u[0]; break; }
+  }
+  _cacheUsers[propre] = found;
+  return found;
+}
+
 // ---------------------------------------------------------------------------
 // Requetes metier vers le CRM. Chaque fonction renvoie des lignes pretes a
 // exporter : c'est du code deterministe, le modele n'ecrit jamais ces donnees.
@@ -155,4 +177,4 @@ async function creerRdv({ objet, debut, duree_heures = 1, piste_id = null, agent
   return { id, valeurs };
 }
 
-module.exports = { aAppelerAujourdhui, rendezVous, chercherParTelephone, creerPiste, creerRdv };
+module.exports = { aAppelerAujourdhui, rendezVous, chercherParTelephone, creerPiste, creerRdv, resoudreUtilisateur };

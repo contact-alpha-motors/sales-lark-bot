@@ -23,10 +23,10 @@ async function creerActivite(leadId, a, plan) {
     activity_type_id: TYPE_ACTIVITE_RDV,
     date_deadline: a.rdv.date,
     summary: a.rdv.resume,
-    user_id: plan.agent_id || (await uid()),
+    user_id: a.agent_id || plan.agent_id || (await uid()),
   });
 }
-const { chercherParTelephone } = require("./requetes");
+const { chercherParTelephone, resoudreUtilisateur } = require("./requetes");
 const { normaliserTelephone, telephoneValide, analyserResultat, detecterAgent, detecterDate } = require("../coeur/referentiel");
 const { extraireFichierJson } = require("../ia");
 const { disponible: popplerDispo, pdfEnImages, nettoyer } = require("../documents/pdf_en_images");
@@ -154,13 +154,8 @@ async function resoudreTag(nom) {
   return id;
 }
 
-async function resoudreAgent(nom) {
-  if (!nom) return null;
-  const jeton = String(nom).trim().split(/\s+/)[0]; // "Astride AH" -> "Astride"
-  if (!jeton) return null;
-  const users = await rechercherLire("res.users", [["name", "ilike", jeton]], ["id", "name"], { limit: 1 });
-  return users.length ? users[0] : null;
-}
+// Delegue au resolveur robuste (gere "MARIE-SHARONE", tokens distinctifs, cache).
+const resoudreAgent = resoudreUtilisateur;
 
 function parserDateRdv(texte, anneeDefaut) {
   const m = String(texte || "").match(/(\d{1,2})[\/-](\d{1,2})(?:[\/-](\d{2,4}))?/);
@@ -338,7 +333,8 @@ async function executerPlan(plan) {
         contact_phone: a.telephone,
         notes: a.notes,
       };
-      if (plan.agent_id) evenement.user_id = plan.agent_id;
+      const agentEvt = a.agent_id || plan.agent_id;
+      if (agentEvt) evenement.user_id = agentEvt;
       if (a.tag) {
         const tagId = await resoudreTag(a.tag);
         evenement.tag_ids = [[6, 0, [tagId]]];
