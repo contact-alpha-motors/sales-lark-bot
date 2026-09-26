@@ -12,7 +12,13 @@ async function modeleId(technique) {
   if (technique === "crm.lead") _idCrmLead = id;
   return id;
 }
-const { enregistrerOcr, lireOcr, enregistrerAppel, mirrorLeads, trouverAppelSynced, marquerActiviteFaite } = require("../memoire/base");
+const { enregistrerOcr, lireOcr, enregistrerAppel, mirrorLeads, trouverAppelSynced, marquerActiviteFaite,
+  appelDejaEnregistre, listerEnAttente, marquerSynced, marquerErreurSync } = require("../memoire/base");
+
+// Odoo injoignable : on stoppe proprement une synchro sans casser (mode degrade).
+function estErreurOdoo(e) {
+  return /Odoo HTTP|Odoo:|ECONN|ETIMEDOUT|timeout|530|50[234]/i.test((e && e.message) || "");
+}
 
 // Cree l'activite de suivi (RDV/rappel) d'une ligne. Champs obligatoires Odoo :
 // res_model_id (id ir.model), res_id, date_deadline, user_id.
@@ -284,93 +290,161 @@ async function completerEntete(plan, texte) {
   return !plan.besoin_entete;
 }
 
-// Ecrit le plan dans Odoo. Chaque ligne est isolee dans son try/catch : une
-// ligne qui echoue n'emporte pas le reste de la fiche.
+// Ecrit UNE action dans Odoo (piste + evenement + activite eventuelle). Isolee :
+// une ligne qui echoue n'emporte pas le reste. `ctx` = contexte du plan
+// (ocr_hash, agent_id, event_date par defaut). Renvoie l'etat + les ids Odoo.
+// Cumule les compteurs dans `resultat`.
+async function ecrireActionOdoo(a, ctx, resultat) {
+  // --- Garde-fou idempotence : ligne (meme scan + tel) deja synchronisee ? ---
+  const dejaSync = trouverAppelSynced(ctx.ocr_hash, a.telephone);
+  if (dejaSync) {
+    resultat.deja_synced += 1;
+    let activiteOk = dejaSync.activite_ok;
+    // On NE recree PAS piste+evenement. On rattrape seulement une activite
+    // manquante (RDV/rappel) si elle n'a pas encore ete creee (backfill).
+    if (a.rdv && !dejaSync.activite_ok && dejaSync.odoo_lead_id) {
+      try {
+        await creerActivite(dejaSync.odoo_lead_id, a, ctx);
+        marquerActiviteFaite(dejaSync.id);
+        resultat.activites += 1;
+        activiteOk = 1;
+      } catch (e) {
+        resultat.echecs.push({ telephone: a.telephone, etape: "activite(backfill)", erreur: e.message });
+      }
+    }
+    return { skip: true, etat: "synced", leadId: dejaSync.odoo_lead_id, eventId: null, activiteOk };
+  }
+
+  let leadId = a.piste_id;
+  let eventId = null;
+  let etat = "synced";
+  let err = null;
+  let activiteOk = 0;
+  try {
+    if (!leadId) {
+      leadId = await creer("crm.lead", {
+        name: a.nom || `Prospect ${a.telephone}`,
+        contact_name: a.nom || undefined,
+        phone: a.telephone,
+        type: "lead",
+      });
+      resultat.pistes_creees += 1;
+      mirrorLeads([{ id: leadId, name: a.nom, contact_name: a.nom, phone: a.telephone, type: "lead" }]);
+    }
+
+    const evenement = {
+      event_type: a.event_type,
+      lead_id: leadId,
+      event_date: a.event_date || ctx.event_date,
+      contact_phone: a.telephone,
+      notes: a.notes,
+    };
+    if (a.sous_type) evenement.sub_type = a.sous_type; // null = non categorise
+    const agentEvt = a.agent_id || ctx.agent_id;
+    if (agentEvt) evenement.user_id = agentEvt;
+    if (a.tag) {
+      const tagId = await resoudreTag(a.tag);
+      evenement.tag_ids = [[6, 0, [tagId]]];
+    }
+    eventId = await creer("dealership.event.log", evenement);
+    resultat.evenements += 1;
+
+    if (a.rdv) {
+      try {
+        await creerActivite(leadId, a, ctx);
+        resultat.activites += 1;
+        activiteOk = 1;
+      } catch (e) {
+        // L'activite est un bonus : son echec ne perd pas l'evenement.
+        resultat.echecs.push({ telephone: a.telephone, etape: "activite", erreur: e.message });
+      }
+    }
+  } catch (e) {
+    etat = "error";
+    err = e.message;
+    resultat.echecs.push({ telephone: a.telephone, etape: "evenement", erreur: e.message });
+  }
+  return { skip: false, etat, err, leadId: leadId || null, eventId, activiteOk };
+}
+
+// Ecrit le plan directement dans Odoo (chemin historique). Chaque ligne trace
+// son etat de synchro dans l'entrepot local.
 async function executerPlan(plan) {
   const resultat = { pistes_creees: 0, evenements: 0, activites: 0, deja_synced: 0, echecs: [] };
+  const ctx = { ocr_hash: plan.ocr_hash, agent: plan.agent, agent_id: plan.agent_id || null, event_date: plan.event_date || null };
 
   for (const a of plan.actions) {
-    // --- Garde-fou idempotence : ligne (meme scan + tel) deja synchronisee ? ---
-    const dejaSync = trouverAppelSynced(plan.ocr_hash, a.telephone);
-    if (dejaSync) {
-      resultat.deja_synced += 1;
-      // On NE recree PAS piste+evenement. On rattrape seulement une activite
-      // manquante (RDV/rappel) si elle n'a pas encore ete creee (backfill).
-      if (a.rdv && !dejaSync.activite_ok && dejaSync.odoo_lead_id) {
-        try {
-          await creerActivite(dejaSync.odoo_lead_id, a, plan);
-          marquerActiviteFaite(dejaSync.id);
-          resultat.activites += 1;
-        } catch (e) {
-          resultat.echecs.push({ telephone: a.telephone, etape: "activite(backfill)", erreur: e.message });
-        }
-      }
-      continue;
-    }
-
-    let leadId = a.piste_id;
-    let eventId = null;
-    let etat = "synced";
-    let err = null;
-    let activiteOk = 0;
-    try {
-      if (!leadId) {
-        leadId = await creer("crm.lead", {
-          name: a.nom || `Prospect ${a.telephone}`,
-          contact_name: a.nom || undefined,
-          phone: a.telephone,
-          type: "lead",
-        });
-        resultat.pistes_creees += 1;
-        mirrorLeads([{ id: leadId, name: a.nom, contact_name: a.nom, phone: a.telephone, type: "lead" }]);
-      }
-
-      const evenement = {
-        event_type: a.event_type,
-        lead_id: leadId,
-        event_date: a.event_date || plan.event_date,
-        contact_phone: a.telephone,
-        notes: a.notes,
-      };
-      if (a.sous_type) evenement.sub_type = a.sous_type; // null = non categorise
-      const agentEvt = a.agent_id || plan.agent_id;
-      if (agentEvt) evenement.user_id = agentEvt;
-      if (a.tag) {
-        const tagId = await resoudreTag(a.tag);
-        evenement.tag_ids = [[6, 0, [tagId]]];
-      }
-      eventId = await creer("dealership.event.log", evenement);
-      resultat.evenements += 1;
-
-      if (a.rdv) {
-        try {
-          await creerActivite(leadId, a, plan);
-          resultat.activites += 1;
-          activiteOk = 1;
-        } catch (e) {
-          // L'activite est un bonus : son echec ne perd pas l'evenement.
-          resultat.echecs.push({ telephone: a.telephone, etape: "activite", erreur: e.message });
-        }
-      }
-    } catch (e) {
-      etat = "error";
-      err = e.message;
-      resultat.echecs.push({ telephone: a.telephone, etape: "evenement", erreur: e.message });
-    }
-
-    // Trace locale durable + etat de synchro (entrepot SQLite).
+    const res = await ecrireActionOdoo(a, ctx, resultat);
+    if (res.skip) continue;
     try {
       enregistrerAppel({
-        ocr_hash: plan.ocr_hash, agent: plan.agent, date_appel: plan.date_appels,
+        ocr_hash: plan.ocr_hash, agent: a.agent_nom || plan.agent, date_appel: plan.date_appels,
         telephone: a.telephone, nom: a.nom, code: a.canon, sous_type: a.sous_type,
-        commentaire: a.notes, sync_state: etat, odoo_lead_id: leadId || null,
-        odoo_event_id: eventId, rdv_date: a.rdv ? a.rdv.date : null, activite_ok: activiteOk, sync_error: err,
+        commentaire: a.notes, sync_state: res.etat, odoo_lead_id: res.leadId,
+        odoo_event_id: res.eventId, rdv_date: a.rdv ? a.rdv.date : null, activite_ok: res.activiteOk, sync_error: res.err,
       });
     } catch (e2) {
       console.error("[appels] enregistrement local:", e2.message);
     }
   }
+  return resultat;
+}
 
+// --- Modele "garde d'abord, synchronise a la demande" ---------------------
+
+// Garde le plan en LOCAL (aucune ecriture Odoo). Chaque ligne porte son
+// contexte (payload) pour etre poussee plus tard, en tout ou en partie.
+function stagerPlan(plan) {
+  let stagees = 0, deja = 0;
+  const ctx = { ocr_hash: plan.ocr_hash, agent: plan.agent, agent_id: plan.agent_id || null, event_date: plan.event_date || null };
+  for (const a of plan.actions) {
+    if (appelDejaEnregistre(plan.ocr_hash, a.telephone)) { deja += 1; continue; }
+    const dateLigne = String(a.event_date || plan.event_date || "").slice(0, 10) || plan.date_appels || null;
+    try {
+      enregistrerAppel({
+        ocr_hash: plan.ocr_hash, agent: a.agent_nom || plan.agent, date_appel: dateLigne,
+        telephone: a.telephone, nom: a.nom, code: a.canon || null, sous_type: a.sous_type,
+        commentaire: a.notes, rdv_date: a.rdv ? a.rdv.date : null,
+        payload: JSON.stringify({ action: a, ctx }), sync_state: "local",
+      });
+      stagees += 1;
+    } catch (e) {
+      console.error("[appels] stage local:", e.message);
+    }
+  }
+  return { stagees, deja, resume: plan.resume };
+}
+
+// Pousse vers Odoo les lignes gardees en local (filtres facultatifs : agent,
+// fiche/hash, date, telephone). Odoo injoignable -> on s'arrete proprement,
+// les lignes non poussees restent 'local' (on relancera plus tard).
+async function synchroniser(filtre = {}) {
+  const rows = listerEnAttente(filtre);
+  const resultat = { total: rows.length, synced: 0, pistes_creees: 0, evenements: 0, activites: 0, deja_synced: 0, echecs: [], interrompu: false };
+
+  for (const row of rows) {
+    const p = row.payload;
+    if (!p || !p.action) {
+      marquerErreurSync(row.id, "payload manquant (ligne trop ancienne)");
+      resultat.echecs.push({ id: row.id, telephone: row.telephone, erreur: "payload manquant" });
+      continue;
+    }
+    let res;
+    try {
+      res = await ecrireActionOdoo(p.action, p.ctx || {}, resultat);
+    } catch (e) {
+      if (estErreurOdoo(e)) { resultat.interrompu = true; break; } // Odoo down : on garde le reste en local
+      marquerErreurSync(row.id, e.message);
+      resultat.echecs.push({ id: row.id, telephone: row.telephone, erreur: e.message });
+      continue;
+    }
+    if (res.etat === "error") {
+      marquerErreurSync(row.id, res.err);
+    } else {
+      marquerSynced(row.id, { odoo_lead_id: res.leadId, odoo_event_id: res.eventId, activite_ok: res.activiteOk ? 1 : 0 });
+      resultat.synced += 1;
+    }
+  }
   return resultat;
 }
 
@@ -397,4 +471,4 @@ function resumePlan(plan) {
   return lignes.join("\n");
 }
 
-module.exports = { extraireFeuilleAppel, construirePlan, executerPlan, resumePlan, completerEntete };
+module.exports = { extraireFeuilleAppel, construirePlan, executerPlan, resumePlan, completerEntete, stagerPlan, synchroniser };

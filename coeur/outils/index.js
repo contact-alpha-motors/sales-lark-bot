@@ -1,6 +1,7 @@
 const requetes = require("../../odoo/requetes");
 const { interroger, compterCrm } = require("../../odoo/lecture");
-const { listerFichesScannees } = require("../../memoire/base");
+const { listerFichesScannees, resumeEnAttente, hashesParFichier } = require("../../memoire/base");
+const { synchroniser } = require("../../odoo/import_appels");
 const { exporterXlsx } = require("../../documents/xlsx");
 const { exporterPdf } = require("../../documents/pdf");
 const { isoJour, enClair } = require("../dates");
@@ -260,6 +261,86 @@ const OUTILS = {
     async executer(p) {
       const { id } = await requetes.creerRdv(p);
       return { texte: `RDV #${id} cree dans Odoo : ${p.objet} le ${p.debut}.`, record_id: id };
+    },
+  },
+
+  en_attente: {
+    ecriture: false,
+    confirmer: false,
+    schema: {
+      type: "function",
+      function: {
+        name: "en_attente",
+        description:
+          "Montre ce qui est GARDE EN LOCAL et pas encore envoye dans Odoo : total, repartition par commercial, par fiche et par date. " +
+          "Utilise-le quand l'utilisateur demande « qu'est-ce qui attend ? », « combien en local ? », « qu'est-ce qui n'est pas encore sur Odoo ? ». Fonctionne SANS Odoo.",
+        parameters: { type: "object", properties: {} },
+      },
+    },
+    async executer() {
+      const r = resumeEnAttente();
+      if (!r.total && !r.erreurs) return { texte: "Rien en attente : tout est deja synchronise (ou rien n'a ete garde en local)." };
+      const lignes = [`${r.total} ligne(s) en attente d'envoi dans Odoo${r.erreurs ? `, plus ${r.erreurs} en erreur (retentables)` : ""} :`];
+      if (r.par_agent.length) lignes.push("- Par commercial : " + r.par_agent.map((x) => `${x.agent} (${x.n})`).join(", "));
+      if (r.par_fiche.length) lignes.push("- Par fiche : " + r.par_fiche.map((x) => `${x.fichier} (${x.n})`).join(", "));
+      if (r.par_date.length) lignes.push("- Par date : " + r.par_date.map((x) => `${x.date_appel} (${x.n})`).join(", "));
+      lignes.push("", "Dis « synchronise tout » ou « synchronise <commercial / date / fiche> » pour envoyer dans Odoo.");
+      return { texte: lignes.join("\n") };
+    },
+  },
+
+  synchroniser_odoo: {
+    ecriture: true,
+    confirmer: false,
+    schema: {
+      type: "function",
+      function: {
+        name: "synchroniser_odoo",
+        description:
+          "Pousse vers Odoo les lignes gardees en local (issues des fiches scannees). C'est l'ETAPE d'ecriture : rien ne part dans Odoo avant. " +
+          "Filtre selon la demande : par commercial (agent), par date (AAAA-MM-JJ), par fiche (bout du nom de fichier), par telephone, ou tout (tout=true). " +
+          "« synchronise tout / envoie tout sur odoo » -> tout=true. « synchronise cecile » -> agent='cecile'. « envoie la fiche du 23 » -> date ou fiche selon le sens. Combine les filtres si besoin. " +
+          "N'appelle ce outil QUE si l'utilisateur demande explicitement d'envoyer/synchroniser sur Odoo.",
+        parameters: {
+          type: "object",
+          properties: {
+            agent: { type: "string", description: "Commercial a synchroniser (nom ou partie), ex. 'cecile'" },
+            date: { type: "string", description: "Date d'appel AAAA-MM-JJ a synchroniser" },
+            fiche: { type: "string", description: "Bout du nom de la fiche/fichier a synchroniser" },
+            telephone: { type: "string", description: "Un numero precis a synchroniser" },
+            tout: { type: "boolean", description: "true = tout envoyer, sans filtre" },
+          },
+        },
+      },
+    },
+    async executer(p) {
+      const filtreBase = { agent: p.agent, date: p.date, telephone: p.telephone };
+      const aucunFiltre = !p.tout && !p.agent && !p.date && !p.fiche && !p.telephone;
+      if (aucunFiltre) {
+        return { texte: "Precise quoi synchroniser : « tout », un commercial, une date ou une fiche. (Dis « qu'est-ce qui attend ? » pour voir le detail.)" };
+      }
+
+      const cumul = { total: 0, synced: 0, pistes_creees: 0, evenements: 0, activites: 0, deja_synced: 0, echecs: [], interrompu: false };
+      const fusion = (r) => {
+        for (const k of ["total", "synced", "pistes_creees", "evenements", "activites", "deja_synced"]) cumul[k] += r[k] || 0;
+        cumul.echecs.push(...(r.echecs || []));
+        if (r.interrompu) cumul.interrompu = true;
+      };
+
+      if (p.fiche) {
+        const hashes = hashesParFichier(p.fiche);
+        if (!hashes.length) return { texte: `Aucune fiche gardee dont le nom contient « ${p.fiche} ».` };
+        for (const h of hashes) { if (cumul.interrompu) break; fusion(await synchroniser({ ...filtreBase, hash: h })); }
+      } else {
+        fusion(await synchroniser(filtreBase)); // filtres vides = tout ce qui attend
+      }
+
+      if (!cumul.total) return { texte: "Rien a synchroniser pour ce filtre (deja fait, ou aucune ligne ne correspond)." };
+      let msg = `Synchro Odoo : ${cumul.synced}/${cumul.total} ligne(s) envoyee(s) — ${cumul.pistes_creees} nouvelle(s) piste(s), ${cumul.evenements} evenement(s), ${cumul.activites} RDV/relance(s) datee(s).`;
+      if (cumul.deja_synced) msg += ` ${cumul.deja_synced} deja presente(s) dans Odoo (ignorees, pas de doublon).`;
+      if (cumul.echecs.length) msg += ` ${cumul.echecs.length} en echec (gardees en local, retentables).`;
+      if (cumul.interrompu) msg += ` ⚠️ Odoo est devenu injoignable : le reste reste garde en local, relance « synchronise » plus tard.`;
+      return { texte: msg };
     },
   },
 };

@@ -7,7 +7,7 @@
 // ainsi en production).
 // ---------------------------------------------------------------------------
 
-const OUTILS_ECRITURE = new Set(["creer_lead", "creer_rdv"]);
+const OUTILS_ECRITURE = new Set(["creer_lead", "creer_rdv", "synchroniser_odoo"]);
 
 function ecrivains() {
   return (process.env.LARK_ECRIVAINS || "")

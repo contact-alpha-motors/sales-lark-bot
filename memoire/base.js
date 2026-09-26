@@ -88,7 +88,8 @@ db.exec(`
     code TEXT,
     sous_type TEXT,
     commentaire TEXT,
-    sync_state TEXT NOT NULL DEFAULT 'pending',
+    payload TEXT,                  -- action + contexte du plan (JSON) pour synchro differee
+    sync_state TEXT NOT NULL DEFAULT 'pending',  -- 'local' (garde, pas sur Odoo) | 'synced' | 'error'
     odoo_lead_id INTEGER,
     odoo_event_id INTEGER,
     rdv_date TEXT,
@@ -133,6 +134,7 @@ db.exec(`
 for (const sql of [
   "ALTER TABLE appels ADD COLUMN rdv_date TEXT",
   "ALTER TABLE appels ADD COLUMN activite_ok INTEGER DEFAULT 0",
+  "ALTER TABLE appels ADD COLUMN payload TEXT",
 ]) {
   try { db.exec(sql); } catch { /* colonne deja presente */ }
 }
@@ -286,19 +288,76 @@ function chercherLeadMirror(variantes) {
 
 // Entrepot des appels extraits + etat de synchro Odoo.
 const insAppel = db.prepare(`
-  INSERT INTO appels (ocr_hash, agent, date_appel, telephone, nom, code, sous_type, commentaire, sync_state, odoo_lead_id, odoo_event_id, rdv_date, activite_ok, sync_error, synced_at)
-  VALUES (@ocr_hash, @agent, @date_appel, @telephone, @nom, @code, @sous_type, @commentaire, @sync_state, @odoo_lead_id, @odoo_event_id, @rdv_date, @activite_ok, @sync_error,
+  INSERT INTO appels (ocr_hash, agent, date_appel, telephone, nom, code, sous_type, commentaire, payload, sync_state, odoo_lead_id, odoo_event_id, rdv_date, activite_ok, sync_error, synced_at)
+  VALUES (@ocr_hash, @agent, @date_appel, @telephone, @nom, @code, @sous_type, @commentaire, @payload, @sync_state, @odoo_lead_id, @odoo_event_id, @rdv_date, @activite_ok, @sync_error,
           CASE WHEN @sync_state='synced' THEN CURRENT_TIMESTAMP ELSE NULL END)
 `);
 function enregistrerAppel(r) {
   return Number(insAppel.run({
     ocr_hash: null, agent: null, date_appel: null, telephone: null, nom: null, code: null,
-    sous_type: null, commentaire: null, sync_state: "pending", odoo_lead_id: null,
+    sous_type: null, commentaire: null, payload: null, sync_state: "pending", odoo_lead_id: null,
     odoo_event_id: null, rdv_date: null, activite_ok: 0, sync_error: null, ...r,
   }).lastInsertRowid);
 }
 function statsAppels() {
   return db.prepare("SELECT sync_state, COUNT(*) n FROM appels GROUP BY sync_state").all();
+}
+
+// --- Entrepot local en attente de synchro (le "oui" garde ici, sans Odoo) ---
+
+// Deja garde (local) OU deja pousse (synced) pour ce (scan, telephone) ?
+// Evite de re-empiler la meme ligne quand on renvoie une fiche.
+function appelDejaEnregistre(ocrHash, telephone) {
+  if (!ocrHash || !telephone) return null;
+  return db.prepare(
+    "SELECT id, sync_state FROM appels WHERE ocr_hash = ? AND telephone = ? AND sync_state IN ('local','synced') ORDER BY id DESC LIMIT 1"
+  ).get(ocrHash, telephone) || null;
+}
+
+// Lignes gardees en local (a pousser), avec filtres libres facultatifs :
+// agent (LIKE), fiche (ocr_hash), date (prefixe de date_appel), telephone.
+// 'reessai' inclut aussi les lignes en erreur (pour retenter une synchro).
+function listerEnAttente({ agent, hash, date, telephone, reessai = true, limite = 1000 } = {}) {
+  const etats = reessai ? "('local','error')" : "('local')";
+  const cond = [`sync_state IN ${etats}`];
+  const args = [];
+  if (agent) { cond.push("agent LIKE ?"); args.push(`%${agent}%`); }
+  if (hash) { cond.push("ocr_hash = ?"); args.push(hash); }
+  if (date) { cond.push("date_appel LIKE ?"); args.push(`${date}%`); }
+  if (telephone) { cond.push("telephone LIKE ?"); args.push(`%${telephone}%`); }
+  const rows = db.prepare(
+    `SELECT * FROM appels WHERE ${cond.join(" AND ")} ORDER BY id LIMIT ?`
+  ).all(...args, Math.min(Math.max(1, limite), 5000));
+  for (const r of rows) { try { r.payload = r.payload ? JSON.parse(r.payload) : null; } catch { r.payload = null; } }
+  return rows;
+}
+
+// Vue synthetique de ce qui attend d'etre synchronise : total + repartition
+// par commercial, par fiche (avec nom de fichier), par date, et erreurs.
+function resumeEnAttente() {
+  const total = db.prepare("SELECT COUNT(*) n FROM appels WHERE sync_state='local'").get().n;
+  const erreurs = db.prepare("SELECT COUNT(*) n FROM appels WHERE sync_state='error'").get().n;
+  const parAgent = db.prepare(
+    "SELECT COALESCE(agent,'?') agent, COUNT(*) n FROM appels WHERE sync_state='local' GROUP BY agent ORDER BY n DESC"
+  ).all();
+  const parFiche = db.prepare(
+    `SELECT a.ocr_hash, COALESCE(o.fichier,'?') fichier, COUNT(*) n
+       FROM appels a LEFT JOIN ocr_cache o ON o.hash = a.ocr_hash
+      WHERE a.sync_state='local' GROUP BY a.ocr_hash ORDER BY n DESC`
+  ).all();
+  const parDate = db.prepare(
+    "SELECT COALESCE(date_appel,'?') date_appel, COUNT(*) n FROM appels WHERE sync_state='local' GROUP BY date_appel ORDER BY date_appel"
+  ).all();
+  return { total, erreurs, par_agent: parAgent, par_fiche: parFiche, par_date: parDate };
+}
+
+function marquerSynced(id, { odoo_lead_id = null, odoo_event_id = null, activite_ok = 0 } = {}) {
+  db.prepare(
+    "UPDATE appels SET sync_state='synced', odoo_lead_id=?, odoo_event_id=?, activite_ok=?, sync_error=NULL, synced_at=CURRENT_TIMESTAMP WHERE id=?"
+  ).run(odoo_lead_id, odoo_event_id, activite_ok, id);
+}
+function marquerErreurSync(id, err) {
+  db.prepare("UPDATE appels SET sync_state='error', sync_error=? WHERE id=?").run(String(err || "").slice(0, 500), id);
 }
 // Idempotence : une ligne (meme scan + meme telephone) deja synchronisee.
 function trouverAppelSynced(ocrHash, telephone) {
@@ -309,6 +368,13 @@ function trouverAppelSynced(ocrHash, telephone) {
 }
 function marquerActiviteFaite(id) {
   db.prepare("UPDATE appels SET activite_ok = 1 WHERE id = ?").run(id);
+}
+
+// Empreintes des scans dont le nom de fichier contient <fragment> (pour cibler
+// une synchro « la fiche X »).
+function hashesParFichier(fragment) {
+  if (!fragment) return [];
+  return db.prepare("SELECT DISTINCT hash FROM ocr_cache WHERE fichier LIKE ?").all(`%${fragment}%`).map((r) => r.hash);
 }
 
 // Liste les fiches deja scannees (local, sans Odoo) — pour le mode degrade.
@@ -351,6 +417,12 @@ module.exports = {
   statsAppels,
   trouverAppelSynced,
   marquerActiviteFaite,
+  appelDejaEnregistre,
+  listerEnAttente,
+  resumeEnAttente,
+  hashesParFichier,
+  marquerSynced,
+  marquerErreurSync,
   mirrorLeads,
   chercherLeadMirror,
 };

@@ -3,7 +3,7 @@ const { converser, lireFichier } = require("../ia");
 const { construireContexte } = require("./contexte");
 const { OUTILS, schemas } = require("./outils");
 const { peutExecuter } = require("./droits");
-const { extraireFeuilleAppel, construirePlan, executerPlan, resumePlan, completerEntete } = require("../odoo/import_appels");
+const { extraireFeuilleAppel, construirePlan, resumePlan, completerEntete, stagerPlan } = require("../odoo/import_appels");
 const { extraireFicheReception, construirePlanRelance, resumePlanRelance } = require("../odoo/import_relance");
 const {
   enregistrerMessage,
@@ -128,7 +128,9 @@ async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichie
         return repondre(chatId, "D'accord, j'annule. Rien n'a ete ecrit dans Odoo.");
       }
 
-      // Import d'une fiche (appel manuscrite OU relance receptions) : ecriture directe.
+      // Import d'une fiche (appel manuscrite OU relance receptions) : on GARDE
+      // d'abord en LOCAL, rien n'est ecrit dans Odoo. La synchro se declenche a
+      // la demande (« synchronise tout / cecile / la fiche »), en tout ou partie.
       if (attente.outil === "import_appels" || attente.outil === "import_relance") {
         // Garde-fou en-tete : uniquement pour les fiches d'appel (agent/date
         // manuscrits). Les fiches de relance ont toujours une date par defaut.
@@ -136,20 +138,11 @@ async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichie
           poserActionEnAttente(chatId, "import_appels", attente.parametres, "Import fiche d'appel");
           return repondre(chatId, "Il me faut l'agent et une date valide (ex : « Ben 22/09/26 ») avant d'enregistrer.");
         }
-        let r;
-        try {
-          r = await executerPlan(attente.parametres);
-        } catch (e) {
-          if (estErreurOdoo(e)) {
-            poserActionEnAttente(chatId, attente.outil, attente.parametres, attente.description || "Import");
-            return repondre(chatId, "Odoo (CRM) est injoignable, rien n'a ete enregistre. Reponds « oui » a nouveau quand il sera revenu — la fiche est gardee.");
-          }
-          throw e;
-        }
+        const r = stagerPlan(attente.parametres); // local pur, pas d'Odoo -> pas d'echec reseau
         journaliser(chatId, senderId, attente.outil, { agent: attente.parametres.agent, resume: attente.parametres.resume }, r);
-        let msg = `Import termine : ${r.pistes_creees} nouvelle(s) piste(s), ${r.evenements} appel(s)/relance(s) enregistre(s), ${r.activites} RDV/relance(s) datee(s).`;
-        if (r.deja_synced) msg += ` ${r.deja_synced} deja synchronisee(s) (ignorees, pas de doublon).`;
-        if (r.echecs.length) msg += ` ${r.echecs.length} ligne(s) en echec.`;
+        let msg = `C'est garde en local : ${r.stagees} ligne(s) prete(s) a envoyer. Rien n'est encore dans Odoo.`;
+        if (r.deja) msg += ` ${r.deja} etaient deja gardees (pas de doublon).`;
+        msg += `\n\nQuand tu veux, dis-moi : « synchronise tout » pour tout envoyer, « synchronise <commercial> » (ou une date / une fiche) pour une partie, ou « qu'est-ce qui attend ? » pour voir le detail.`;
         return repondre(chatId, msg);
       }
 
