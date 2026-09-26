@@ -140,6 +140,9 @@ const resoudreAgent = resoudreUtilisateur;
 
 async function construirePlanRelance(extraction, indice = "") {
   const agentUser = await resoudreAgent(extraction.agent);
+  // Les fiches sont ordonnees par sections d'agent : une cellule d'agent vide
+  // ou mal lue herite du dernier agent resolu (le commercial de la section).
+  let dernierAgent = agentUser;
   const plan = {
     type: "relance",
     ocr_hash: extraction.hash || null,
@@ -170,8 +173,10 @@ async function construirePlanRelance(extraction, indice = "") {
     // (legende/nom de fichier) ; sinon rien (on demandera).
     const dateSession = detecterDate(ligne.date_session_brut) || detecterDate(indice);
     // Agent PAR LIGNE (colonne "Agent charge de l'appel") : gere les paquets
-    // multi-commerciaux. A defaut, l'agent du titre.
+    // multi-commerciaux. Cellule vide/mal lue -> herite du dernier agent resolu.
     const agentLigne = ligne.agent_ligne ? await resoudreAgent(ligne.agent_ligne) : null;
+    if (agentLigne) dernierAgent = agentLigne;
+    const agentEffectif = agentLigne || dernierAgent;
     const existantes = await chercherParTelephone(tel);
     const piste = existantes[0] || null;
 
@@ -194,8 +199,8 @@ async function construirePlanRelance(extraction, indice = "") {
       event_type: res.event_type,
       sous_type: res.sous_type,
       event_date: dateSession ? `${dateSession} 12:00:00` : null,
-      agent_id: agentLigne ? agentLigne.id : null,
-      agent_nom: agentLigne ? agentLigne.name : (ligne.agent_ligne || plan.agent || "?"),
+      agent_id: agentEffectif ? agentEffectif.id : null,
+      agent_nom: agentEffectif ? agentEffectif.name : (ligne.agent_ligne || plan.agent || "?"),
       non_categorise: !!res.non_categorise,
       notes,
       rdv: null,
