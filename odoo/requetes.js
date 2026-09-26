@@ -9,6 +9,7 @@ function estErreurOdoo(e) {
 // un utilisateur Odoo. Robuste : normalise les tirets, essaie le nom complet
 // puis les tokens distinctifs. Mis en cache par nom (les users ne bougent pas).
 const _cacheUsers = {};
+const sansAccents = (s) => s.normalize("NFD").replace(/[̀-ͯ]/g, "");
 async function resoudreUtilisateur(nom) {
   if (!nom) return null;
   const propre = String(nom).replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
@@ -16,7 +17,10 @@ async function resoudreUtilisateur(nom) {
   if (Object.prototype.hasOwnProperty.call(_cacheUsers, propre)) return _cacheUsers[propre];
 
   const tokens = propre.split(" ").filter((t) => t.length >= 4).sort((a, b) => b.length - a.length);
-  const essais = [propre, ...tokens, propre.split(" ")[0]];
+  const base = [propre, ...tokens, propre.split(" ")[0]];
+  // On tente aussi les variantes SANS accent : "Cécile" trouve "CECILE" et
+  // inversement (Odoo ilike est litteral sur les accents).
+  const essais = [...new Set(base.flatMap((t) => [t, sansAccents(t)]).filter(Boolean))];
   let found = null;
   for (const t of essais) {
     if (!t) continue;

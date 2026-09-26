@@ -195,6 +195,7 @@ async function construirePlanRelance(extraction, indice = "") {
       sous_type: res.sous_type,
       event_date: dateSession ? `${dateSession} 12:00:00` : null,
       agent_id: agentLigne ? agentLigne.id : null,
+      agent_nom: agentLigne ? agentLigne.name : (ligne.agent_ligne || plan.agent || "?"),
       non_categorise: !!res.non_categorise,
       notes,
       rdv: null,
@@ -220,21 +221,37 @@ async function construirePlanRelance(extraction, indice = "") {
     invalides: plan.invalides.length,
     sans_date: plan.actions.filter((a) => !a.event_date).length,
   };
+  // Repartition par agent (le fichier peut etre un paquet de plusieurs commerciaux).
+  const parAgent = {};
+  for (const a of plan.actions) {
+    const nom = a.agent_nom || "?";
+    if (!parAgent[nom]) parAgent[nom] = { n: 0, resolu: !!a.agent_id };
+    parAgent[nom].n += 1;
+  }
+  plan.par_agent = parAgent;
   return plan;
 }
 
 function resumePlanRelance(plan) {
   const r = plan.resume;
+  const agents = Object.entries(plan.par_agent || {});
+  const enTete = agents.length > 1 ? "plusieurs commerciaux" : (agents[0] ? agents[0][0] : plan.agent || "?");
   const lignes = [
-    `Fiche de relance (receptions)${plan.agent ? ` — ${plan.agent}` : ""} :`,
+    `Fiche de relance (receptions) — ${enTete} :`,
     `- ${r.total_lignes} lignes lues`,
     `- ${r.a_ecrire} appels a enregistrer, dont ${r.nouvelles_pistes} nouvelles pistes, ${r.rdv} RDV/relances datees, ${r.whatsapp} relances WhatsApp`,
   ];
+  // Detail par commercial (utile pour un paquet).
+  if (agents.length) {
+    lignes.push("- Par commercial :");
+    for (const [nom, info] of agents.sort((a, b) => b[1].n - a[1].n)) {
+      lignes.push(`   • ${nom} : ${info.n}${info.resolu ? "" : " (non retrouve dans Odoo, non attribue)"}`);
+    }
+  }
   if (r.non_categorises) lignes.push(`- ${r.non_categorises} commentaires importes mais « a categoriser » (code peu clair, texte garde)`);
   if (r.vides) lignes.push(`- ${r.vides} lignes sans commentaire ignorees`);
   if (r.invalides) lignes.push(`- ${r.invalides} numeros invalides ignores`);
   if (r.sans_date) lignes.push(`- ${r.sans_date} sans date de session (date par defaut appliquee)`);
-  if (!plan.agent_id) lignes.push(`- ATTENTION : agent "${plan.agent}" non retrouve dans Odoo, appels non attribues`);
   lignes.push("", 'J\'enregistre tout ca dans Odoo ? Reponds "oui" pour confirmer, "non" pour annuler.');
   return lignes.join("\n");
 }
