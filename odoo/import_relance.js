@@ -83,8 +83,9 @@ function fusionner(pages) {
   return {
     type_fiche: ok.find((p) => p.type_fiche)?.type_fiche || "autre",
     agent: entete.agent || "",
-    // On garde la date de session par page pour la porter sur ses lignes.
-    lignes: ok.flatMap((p) => (p.lignes || []).map((l) => ({ ...l, date_session_brut: p.date_session_brut || "" }))),
+    // On garde la date de session par page pour la porter sur ses lignes, et le
+    // numero de page (ordre de lecture) pour pouvoir signaler les pages sans date.
+    lignes: ok.flatMap((p, idx) => (p.lignes || []).map((l) => ({ ...l, date_session_brut: p.date_session_brut || "", _page: idx + 1 }))),
   };
 }
 
@@ -154,6 +155,7 @@ async function construirePlanRelance(extraction, indice = "") {
     actions: [],
     vides: [],
     invalides: [],
+    sans_date: [], // lignes NON importees faute de date d'appel (page a dater)
   };
 
   for (const ligne of extraction.lignes || []) {
@@ -170,8 +172,13 @@ async function construirePlanRelance(extraction, indice = "") {
     }
 
     // Date d'appel = date de session griffonnee sur la page ; sinon l'indice
-    // (legende/nom de fichier) ; sinon rien (on demandera).
+    // (legende/nom de fichier). Sans date, on NE DEVINE PAS : la ligne est mise
+    // de cote et la page signalee, pour qu'une vraie date soit ajoutee.
     const dateSession = detecterDate(ligne.date_session_brut) || detecterDate(indice);
+    if (!dateSession) {
+      plan.sans_date.push({ nom: ligne.nom, telephone: tel, page: ligne._page || null });
+      continue;
+    }
     // Agent PAR LIGNE (colonne "Agent charge de l'appel") : gere les paquets
     // multi-commerciaux. Cellule vide/mal lue -> herite du dernier agent resolu.
     const agentLigne = ligne.agent_ligne ? await resoudreAgent(ligne.agent_ligne) : null;
@@ -224,7 +231,9 @@ async function construirePlanRelance(extraction, indice = "") {
     non_categorises: plan.actions.filter((a) => a.non_categorise).length,
     vides: plan.vides.length,
     invalides: plan.invalides.length,
-    sans_date: plan.actions.filter((a) => !a.event_date).length,
+    sans_date: plan.sans_date.length,
+    // Pages (ordre de lecture) qui n'ont aucune date d'appel -> a dater.
+    pages_sans_date: [...new Set(plan.sans_date.map((l) => l.page).filter(Boolean))].sort((a, b) => a - b),
   };
   // Repartition par agent (le fichier peut etre un paquet de plusieurs commerciaux).
   const parAgent = {};
@@ -256,8 +265,11 @@ function resumePlanRelance(plan) {
   if (r.non_categorises) lignes.push(`- ${r.non_categorises} commentaires importes mais « a categoriser » (code peu clair, texte garde)`);
   if (r.vides) lignes.push(`- ${r.vides} lignes sans commentaire ignorees`);
   if (r.invalides) lignes.push(`- ${r.invalides} numeros invalides ignores`);
-  if (r.sans_date) lignes.push(`- ${r.sans_date} sans date de session (date par defaut appliquee)`);
-  lignes.push("", 'J\'enregistre tout ca dans Odoo ? Reponds "oui" pour confirmer, "non" pour annuler.');
+  if (r.sans_date) {
+    const pages = r.pages_sans_date && r.pages_sans_date.length ? ` (pages ${r.pages_sans_date.join(", ")})` : "";
+    lignes.push(`- ⚠️ ${r.sans_date} lignes SANS date d'appel${pages} : NON importees. Ecris une date sur ces pages, ou renvoie le fichier avec la date dans le message.`);
+  }
+  lignes.push("", 'J\'enregistre les lignes datees dans Odoo ? Reponds "oui" pour confirmer, "non" pour annuler.');
   return lignes.join("\n");
 }
 
