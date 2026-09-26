@@ -327,12 +327,12 @@ async function executerPlan(plan) {
 
       const evenement = {
         event_type: a.event_type,
-        sub_type: a.sous_type,
         lead_id: leadId,
         event_date: a.event_date || plan.event_date,
         contact_phone: a.telephone,
         notes: a.notes,
       };
+      if (a.sous_type) evenement.sub_type = a.sous_type; // null = non categorise
       const agentEvt = a.agent_id || plan.agent_id;
       if (agentEvt) evenement.user_id = agentEvt;
       if (a.tag) {

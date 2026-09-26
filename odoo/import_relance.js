@@ -49,28 +49,32 @@ Renvoie UNIQUEMENT du JSON, cette forme exacte :
 }
 Lis TOUTES les lignes de CETTE page. Ne corrige pas les numeros. Info absente = "".`;
 
-// Le resultat de la relance est en texte libre dans le commentaire.
+// Le resultat de la relance est en texte libre (manuscrit, souvent mal OCR).
+// Regle : on NE JETTE JAMAIS une ligne. Si le code n'est pas clair, on importe
+// quand meme un appel avec le commentaire garde et un tag "a categoriser".
+// Patterns tolerants aux fautes d'OCR (RDY, RELA..., RELIEN, HRP, KIHA...).
 function analyserCommentaireRelance(commentaire) {
   const t = (commentaire || "").toUpperCase();
-  if (!t.trim()) return { statut: "ambigu" };
+  if (!t.replace(/[^A-Z0-9]/g, "")) return { statut: "vide" }; // aucun texte -> pas d'appel
 
-  const whatsapp = /WHATSAPP|WHATSAPP|\bWHA\b|\bWA\b/.test(t);
+  const whatsapp = /WHATSA|\bWHA\b|KIHA|\bKHA\b|\bWA\b/.test(t);
   const dateCom = detecterDate(commentaire);
 
-  // Priorite : une preuve d'action datee/qualifiee prime.
-  if (/RDV|RENDEZ|SHOWROOM/.test(t)) {
+  if (/RD[VY]|RENDEZ|SHOWROO/.test(t)) {
     const video = /VID[EÉ]O|VISIO/.test(t);
     return { statut: "ok", event_type: video ? "video_call" : "call", sous_type: video ? "video_meeting_booked" : "meeting_booked", rdv_date: dateCom, whatsapp };
   }
-  if (/RELANC|RAPPEL/.test(t) && !whatsapp) {
+  if (/RELA|RAPPEL/.test(t) && !whatsapp) {
     return { statut: "ok", event_type: "call", sous_type: "call_back", callback_date: dateCom, whatsapp };
   }
-  if (/NOUS\s*REVIEN|REVIEN/.test(t)) return { statut: "ok", event_type: "call", sous_type: "wiil_come_back", whatsapp };
-  if (/NPI|PAS\s*INT|N.?EST\s*PAS\s*INT/.test(t)) return { statut: "ok", event_type: "call", sous_type: "not_interested", whatsapp };
-  if (/NRP|NHA/.test(t)) return { statut: "ok", event_type: "call", sous_type: "no_answer", whatsapp };
+  if (/REVIEN|RELIEN|NOUS\s*R/.test(t)) return { statut: "ok", event_type: "call", sous_type: "wiil_come_back", whatsapp };
+  if (/NPI|NLP|PAS\s*INT/.test(t)) return { statut: "ok", event_type: "call", sous_type: "not_interested", whatsapp };
+  if (/N[RH]P|HRP|NHA|MRB|NRB/.test(t)) return { statut: "ok", event_type: "call", sous_type: "no_answer", whatsapp };
   if (whatsapp) return { statut: "ok", event_type: "message", sous_type: null, note: "Relance WhatsApp", whatsapp };
-  if (/PROFORMA|PROFORMATA/.test(t)) return { statut: "ok", event_type: "call", sous_type: "interested", note: "Proforma", whatsapp };
-  return { statut: "ambigu" };
+  if (/PROFORMA/.test(t)) return { statut: "ok", event_type: "call", sous_type: "interested", note: "Proforma", whatsapp };
+
+  // Non categorise : importe quand meme, commentaire garde, marque a revoir.
+  return { statut: "ok", event_type: "call", sous_type: null, note: "A categoriser", whatsapp, non_categorise: true };
 }
 
 function fusionner(pages) {
@@ -93,7 +97,9 @@ async function extraireFicheReception(chemin) {
   if (cache) {
     try {
       const r = JSON.parse(cache.extraction);
-      if (r && r.type_fiche === "reception") {
+      // On n'utilise le cache que s'il porte le schema courant (agent par ligne) ;
+      // sinon on re-extrait une fois pour recuperer les agents par ligne.
+      if (r && r.type_fiche === "reception" && r.lignes && r.lignes[0] && "agent_ligne" in r.lignes[0]) {
         console.log(`[ocr] cache hit ${hash.slice(0, 8)} (reception)`);
         return r;
       }
@@ -143,7 +149,7 @@ async function construirePlanRelance(extraction, indice = "") {
     // aujourd'hui. Chaque ligne peut la surcharger via sa date de session.
     event_date: `${detecterDate(indice) || aujourdhuiCmr()} 12:00:00`,
     actions: [],
-    ambigus: [],
+    vides: [],
     invalides: [],
   };
 
@@ -151,8 +157,8 @@ async function construirePlanRelance(extraction, indice = "") {
     const tel = normaliserTelephone(ligne.telephone);
     const res = analyserCommentaireRelance(ligne.commentaire);
 
-    if (res.statut === "ambigu") {
-      plan.ambigus.push({ nom: ligne.nom, telephone: tel, commentaire: ligne.commentaire });
+    if (res.statut === "vide") {
+      plan.vides.push({ nom: ligne.nom, telephone: tel });
       continue;
     }
     if (!telephoneValide(tel)) {
@@ -189,6 +195,7 @@ async function construirePlanRelance(extraction, indice = "") {
       sous_type: res.sous_type,
       event_date: dateSession ? `${dateSession} 12:00:00` : null,
       agent_id: agentLigne ? agentLigne.id : null,
+      non_categorise: !!res.non_categorise,
       notes,
       rdv: null,
     };
@@ -208,7 +215,8 @@ async function construirePlanRelance(extraction, indice = "") {
     nouvelles_pistes: plan.actions.filter((a) => a.nouvelle_piste).length,
     rdv: plan.actions.filter((a) => a.rdv).length,
     whatsapp: plan.actions.filter((a) => a.event_type === "message").length,
-    ambigus: plan.ambigus.length,
+    non_categorises: plan.actions.filter((a) => a.non_categorise).length,
+    vides: plan.vides.length,
     invalides: plan.invalides.length,
     sans_date: plan.actions.filter((a) => !a.event_date).length,
   };
@@ -222,7 +230,8 @@ function resumePlanRelance(plan) {
     `- ${r.total_lignes} lignes lues`,
     `- ${r.a_ecrire} appels a enregistrer, dont ${r.nouvelles_pistes} nouvelles pistes, ${r.rdv} RDV/relances datees, ${r.whatsapp} relances WhatsApp`,
   ];
-  if (r.ambigus) lignes.push(`- ${r.ambigus} commentaires non compris NON importes`);
+  if (r.non_categorises) lignes.push(`- ${r.non_categorises} commentaires importes mais « a categoriser » (code peu clair, texte garde)`);
+  if (r.vides) lignes.push(`- ${r.vides} lignes sans commentaire ignorees`);
   if (r.invalides) lignes.push(`- ${r.invalides} numeros invalides ignores`);
   if (r.sans_date) lignes.push(`- ${r.sans_date} sans date de session (date par defaut appliquee)`);
   if (!plan.agent_id) lignes.push(`- ATTENTION : agent "${plan.agent}" non retrouve dans Odoo, appels non attribues`);
