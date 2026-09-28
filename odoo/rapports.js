@@ -118,13 +118,11 @@ async function rdv({ statut = "honore", debut, fin, agent, mode = "liste", limit
 // --- Receptions showroom (fiche hotesse, riche : telephone + details) -------
 async function receptions({ debut, fin, limite = 30 } = {}) {
   const { min, max, d, f } = bornes(debut, fin);
-  // La date de reception est parfois vide sur d'anciennes fiches : ces fiches-la
-  // n'apparaissent pas dans une plage datee (limite connue).
-  const domaine = [
-    ["x_studio_date_et_heure_de_reception", ">=", min],
-    ["x_studio_date_et_heure_de_reception", "<=", max],
-  ];
-  const r = await interroger({ modele: "x_reception", domaine, tri: "x_studio_date_et_heure_de_reception desc", limite });
+  // Le champ "date de reception" est vide sur beaucoup de fiches : filtrer
+  // dessus en perdrait la majorite. On borne donc sur create_date (date de
+  // saisie de la fiche, toujours presente) — bon proxy du jour de reception.
+  const domaine = [["create_date", ">=", min], ["create_date", "<=", max]];
+  const r = await interroger({ modele: "x_reception", domaine, tri: "create_date desc", limite });
   return { debut: d, fin: f, lignes: r.lignes, ...fraicheur(r) };
 }
 
