@@ -25,8 +25,37 @@ const {
 
 const MAX_TOURS_OUTILS = 5;
 
-const CONFIRMATIONS = /^(oui|ok|confirme|confirmer|vas-y|go|yes)\b/i;
-const ANNULATIONS = /^(non|annule|annuler|stop|no)\b/i;
+// Une proposition en attente n'est valable qu'un temps : au-dela, un « oui »
+// tardif ne doit PLUS declencher une vieille action (ex. un import laisse en
+// suspens pendant qu'on parlait d'autre chose).
+const EXPIRATION_ATTENTE_MS = 15 * 60 * 1000; // 15 min
+
+// Mots qui, SEULS, forment une confirmation / une annulation.
+const MOT_CONFIRME = /^(oui|ouais|ouaip|ok|okay|d'?accord|dac|confirme[rz]?|valide[rz]?|vas-?y|go|yes|yep)$/i;
+const MOT_ANNULE = /^(non|nan|annule[rz]?|stop|no|laisse|abandonne|oublie)$/i;
+// Mots de remplissage toleres autour d'un « oui » sans en changer le sens.
+const MOT_FILLER = /^(et|puis|alors|donc|bien|s[uû]r|stp|svp|merci|c'?est|bon|ca|ça|le|la|maintenant|fais|fais-?le|enregistre[rz]?|importe[rz]?|please|now|tout)$/i;
+
+// Decoupe en mots (ponctuation retiree). Une CONFIRMATION = le 1er mot est un
+// « oui » ET tous les autres sont des « oui »/remplissage. Ainsi « oui » et
+// « ok vas-y » confirment, mais « oui, en pdf ça serait bien » N'EST PAS une
+// confirmation : c'est une nouvelle demande, qui part au modele.
+function motsDe(texte) {
+  return String(texte || "").toLowerCase().replace(/[.,!?;:()"]/g, " ").split(/\s+/).filter(Boolean);
+}
+function estConfirmation(texte) {
+  const m = motsDe(texte);
+  return m.length > 0 && MOT_CONFIRME.test(m[0]) && m.slice(1).every((t) => MOT_CONFIRME.test(t) || MOT_FILLER.test(t));
+}
+function estAnnulation(texte) {
+  const m = motsDe(texte);
+  return m.length > 0 && MOT_ANNULE.test(m[0]) && m.slice(1).every((t) => MOT_ANNULE.test(t) || MOT_FILLER.test(t));
+}
+function attenteExpiree(attente) {
+  if (!attente || !attente.created_at) return false;
+  const t = Date.parse(String(attente.created_at).replace(" ", "T") + "Z");
+  return Number.isFinite(t) && Date.now() - t > EXPIRATION_ATTENTE_MS;
+}
 
 async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichier }) {
   // Fichier joint : on route entre FICHE DE RELANCE (receptions, tableau
@@ -110,7 +139,7 @@ async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichie
 
   // Fiche d'appel en attente d'en-tete : l'utilisateur fournit agent + date
   // (ex. « Ben 22/09/26 ») sans qu'on re-extraie la fiche.
-  if (texte && !CONFIRMATIONS.test(texte.trim()) && !ANNULATIONS.test(texte.trim())) {
+  if (texte && !estConfirmation(texte) && !estAnnulation(texte)) {
     const enAttente = lireActionEnAttente(chatId);
     if (enAttente && enAttente.outil === "import_appels" && enteteInvalide(enAttente.parametres)) {
       const plan = enAttente.parametres;
@@ -121,11 +150,16 @@ async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichie
   }
 
   // Une ecriture attendait-elle une confirmation dans ce chat ?
-  if (texte && (CONFIRMATIONS.test(texte.trim()) || ANNULATIONS.test(texte.trim()))) {
+  if (texte && (estConfirmation(texte) || estAnnulation(texte))) {
     const attente = prendreActionEnAttente(chatId);
     if (attente) {
-      if (ANNULATIONS.test(texte.trim())) {
+      if (estAnnulation(texte)) {
         return repondre(chatId, "D'accord, j'annule. Rien n'a ete ecrit dans Odoo.");
+      }
+      // Garde-fou anti-« oui » tardif : une proposition trop vieille n'est plus
+      // declenchee (on parlait probablement d'autre chose entre-temps).
+      if (attenteExpiree(attente)) {
+        return repondre(chatId, "Cette proposition datait de plus de 15 min : je l'ai laissee expirer par securite, rien n'a ete enregistre. Refais la demande (renvoyer la fiche est gratuit, elle est deja lue).");
       }
 
       // Import d'une fiche (appel manuscrite OU relance receptions) : on GARDE
