@@ -1,5 +1,60 @@
 const { interroger, compterCrm } = require("./lecture");
 const { resoudreUtilisateur } = require("./requetes");
+const { rechercherLire, uid } = require("./rpc");
+
+// Compte de service (le login Odoo du bot). Les evenements crees par
+// l'integration portent CE user_id, pas le vrai commercial.
+let _svcUid = null;
+async function serviceUid() {
+  if (_svcUid === null) { try { _svcUid = await uid(); } catch { _svcUid = -1; } }
+  return _svcUid;
+}
+
+// Corrige l'attribution des VISITES showroom : quand un evenement est au compte
+// de service, le vrai « recu par » est sur la fiche de reception liee
+// (x_prospect = lead). On remplace l'agent affiche par ce receveur reel.
+// Best-effort : hors-ligne ou en cas d'erreur, on renvoie tel quel.
+async function corrigerReceveur(lignes) {
+  try {
+    if (!Array.isArray(lignes) || !lignes.length) return lignes;
+    const svc = await serviceUid();
+    const cibles = lignes.filter((l) => l.event_type === "visit" && Array.isArray(l.lead_id) && l.lead_id[0]
+      && (!Array.isArray(l.user_id) || l.user_id[0] === svc));
+    if (!cibles.length) return lignes;
+
+    const leadIds = [...new Set(cibles.map((l) => l.lead_id[0]))];
+    const recs = await rechercherLire("x_reception", [["x_prospect", "in", leadIds]],
+      ["x_prospect", "x_studio_recu_par", "x_studio_recu_par_1"], { limit: leadIds.length * 3 });
+
+    // Resout les employes quand seul x_studio_recu_par_1 (ids) est rempli.
+    const empIds = new Set();
+    for (const r of recs) {
+      if ((!Array.isArray(r.x_studio_recu_par) || !r.x_studio_recu_par[1]) && Array.isArray(r.x_studio_recu_par_1)) {
+        r.x_studio_recu_par_1.forEach((id) => typeof id === "number" && empIds.add(id));
+      }
+    }
+    let emp = new Map();
+    if (empIds.size) {
+      const es = await rechercherLire("hr.employee", [["id", "in", [...empIds]]], ["id", "name"]);
+      emp = new Map(es.map((e) => [e.id, e.name]));
+    }
+
+    const parLead = new Map();
+    for (const r of recs) {
+      const lead = Array.isArray(r.x_prospect) ? r.x_prospect[0] : r.x_prospect;
+      if (!lead || parLead.has(lead)) continue;
+      let nom = Array.isArray(r.x_studio_recu_par) && r.x_studio_recu_par[1] ? r.x_studio_recu_par[1] : null;
+      if (!nom && Array.isArray(r.x_studio_recu_par_1) && r.x_studio_recu_par_1.length) nom = emp.get(r.x_studio_recu_par_1[0]) || null;
+      if (nom) parLead.set(lead, nom);
+    }
+
+    for (const l of cibles) {
+      const nom = parLead.get(l.lead_id[0]);
+      if (nom) { l.recu_par = nom; l.user_id = [Array.isArray(l.user_id) ? l.user_id[0] : 0, nom]; }
+    }
+    return lignes;
+  } catch { return lignes; }
+}
 
 // ---------------------------------------------------------------------------
 // Rapports de LECTURE a domaine cable : chaque question frequente a SA requete
@@ -88,7 +143,8 @@ async function interactions({ type, debut, fin, agent, mode = "liste", limite = 
     return { mode, type, debut: d, fin: f, agent: agent || null, agentIrresolu, n: r.n, ...fraicheur(r) };
   }
   const r = await interroger({ modele: "dealership.event.log", domaine, tri: "event_date desc", limite });
-  return { mode, type, debut: d, fin: f, agent: agent || null, agentIrresolu, lignes: r.lignes, ...fraicheur(r) };
+  const lignes = await corrigerReceveur(r.lignes);
+  return { mode, type, debut: d, fin: f, agent: agent || null, agentIrresolu, lignes, ...fraicheur(r) };
 }
 
 // --- RDV par statut (honore=scheduled, pris, confirme, tous) ----------------
@@ -113,7 +169,8 @@ async function rdv({ statut = "honore", debut, fin, agent, mode = "liste", limit
     return { mode, statut, debut: d, fin: f, agent: agent || null, agentIrresolu, n: r.n, ...fraicheur(r) };
   }
   const r = await interroger({ modele: "dealership.event.log", domaine, tri: "event_date desc", limite });
-  return { mode, statut, debut: d, fin: f, agent: agent || null, agentIrresolu, lignes: r.lignes, ...fraicheur(r) };
+  const lignes = await corrigerReceveur(r.lignes);
+  return { mode, statut, debut: d, fin: f, agent: agent || null, agentIrresolu, lignes, ...fraicheur(r) };
 }
 
 // --- RDV PROGRAMMES (agenda) : ce qui est prevu pour une date ---------------
