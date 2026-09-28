@@ -127,6 +127,20 @@ db.exec(`
     resultat TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  -- Cache de LECTURE du CRM : chaque enregistrement lu dans Odoo (leads, ventes,
+  -- visites/evenements...) est garde ici en clair (JSON brut, avant libelles) avec
+  -- son heure de lecture. Odoo debout : on lit en direct et on rafraichit ce cache.
+  -- Odoo a terre : on repond depuis ce cache, en precisant « au <heure> ». Ce n'est
+  -- PAS un clone d'Odoo : il ne contient que ce qu'on a deja consulte (paresseux).
+  CREATE TABLE IF NOT EXISTS crm_cache (
+    modele TEXT NOT NULL,
+    res_id INTEGER NOT NULL,
+    data TEXT NOT NULL,
+    fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (modele, res_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_crm_cache_modele ON crm_cache(modele, fetched_at);
 `);
 
 // Migrations douces : ajoute les colonnes aux bases existantes (le CREATE ne
@@ -370,6 +384,87 @@ function marquerActiviteFaite(id) {
   db.prepare("UPDATE appels SET activite_ok = 1 WHERE id = ?").run(id);
 }
 
+// --- Cache de lecture CRM : ecriture au passage, repli hors-ligne -----------
+
+const upCrmCache = db.prepare(`
+  INSERT INTO crm_cache (modele, res_id, data, fetched_at)
+  VALUES (@modele, @res_id, @data, CURRENT_TIMESTAMP)
+  ON CONFLICT(modele, res_id) DO UPDATE SET data = excluded.data, fetched_at = CURRENT_TIMESTAMP
+`);
+// Garde les lignes BRUTES (avant traduction des codes) : le filtrage hors-ligne
+// doit voir les vrais codes Odoo (sub_type='scheduled', pas 'RDV Honore').
+function mettreEnCacheCrm(modele, lignes) {
+  if (!modele || !Array.isArray(lignes) || !lignes.length) return 0;
+  let n = 0;
+  const tx = db.transaction((rows) => {
+    for (const l of rows) {
+      if (l && l.id != null) { upCrmCache.run({ modele, res_id: l.id, data: JSON.stringify(l) }); n += 1; }
+    }
+  });
+  tx(lignes);
+  return n;
+}
+
+// Evalue une condition Odoo [champ, op, valeur] sur une ligne locale. Gere les
+// operateurs courants ; un many2one arrive en [id, libelle].
+function conditionOk(ligne, champ, op, valeur) {
+  const brut = ligne[champ];
+  const val = brut === false || brut === undefined ? null : brut;
+  const estM2O = Array.isArray(brut) && brut.length === 2 && typeof brut[0] === "number";
+  const txt = estM2O ? String(brut[1] ?? "") : val === null ? "" : String(val);
+  const num = (x) => (x === null ? null : x);
+  switch (op) {
+    case "=": case "==":
+      if (estM2O) return brut[0] === valeur || (typeof valeur === "string" && txt.toLowerCase() === valeur.toLowerCase());
+      return val === valeur || String(num(val)) === String(valeur);
+    case "!=": return !conditionOk(ligne, champ, "=", valeur);
+    case ">": return val !== null && val > valeur;
+    case ">=": return val !== null && val >= valeur;
+    case "<": return val !== null && val < valeur;
+    case "<=": return val !== null && val <= valeur;
+    case "like": case "ilike": case "=ilike":
+      return txt.toLowerCase().includes(String(valeur ?? "").toLowerCase());
+    case "in": return Array.isArray(valeur) && valeur.some((v) => conditionOk(ligne, champ, "=", v));
+    case "not in": return !(Array.isArray(valeur) && valeur.some((v) => conditionOk(ligne, champ, "=", v)));
+    default: return true; // operateur non gere : on ne filtre pas dessus
+  }
+}
+
+// Applique un domaine Odoo localement. On ne gere que le cas courant (ET de
+// conditions plates) : les operateurs logiques '|'/'!' sont ignores -> le
+// filtrage peut etre APPROXIMATIF hors-ligne (signale a l'appelant).
+function filtrerDomaine(lignes, domaine) {
+  const conds = (domaine || []).filter((c) => Array.isArray(c) && c.length === 3);
+  const approx = (domaine || []).some((c) => typeof c === "string" && c !== "&");
+  const out = lignes.filter((l) => conds.every(([f, op, v]) => conditionOk(l, f, op, v)));
+  return { lignes: out, approx };
+}
+
+function trierLocal(lignes, tri) {
+  if (!tri) return lignes;
+  const [champ, sens] = String(tri).split(/\s+/);
+  const desc = (sens || "").toLowerCase() === "desc";
+  return [...lignes].sort((a, b) => {
+    const va = a[champ], vb = b[champ];
+    if (va === vb) return 0;
+    if (va === undefined || va === null || va === false) return 1;
+    if (vb === undefined || vb === null || vb === false) return -1;
+    return (va < vb ? -1 : 1) * (desc ? -1 : 1);
+  });
+}
+
+// Repli hors-ligne : lit le cache d'un modele, applique domaine + tri + limite,
+// et renvoie aussi l'heure de lecture la plus recente (pour le « au <heure> »).
+function lireCacheCrm(modele, { domaine = [], tri, limite = 20 } = {}) {
+  const rows = db.prepare("SELECT data, fetched_at FROM crm_cache WHERE modele = ?").all(modele);
+  const fetched = rows.length ? rows.map((r) => r.fetched_at).sort().slice(-1)[0] : null;
+  let lignes = rows.map((r) => { try { return JSON.parse(r.data); } catch { return null; } }).filter(Boolean);
+  const { lignes: filtrees, approx } = filtrerDomaine(lignes, domaine);
+  const triees = trierLocal(filtrees, tri);
+  const lim = Math.min(Math.max(1, limite || 20), 50);
+  return { lignes: triees.slice(0, lim), total: triees.length, fetched_at: fetched, approx };
+}
+
 // Empreintes des scans dont le nom de fichier contient <fragment> (pour cibler
 // une synchro « la fiche X »).
 function hashesParFichier(fragment) {
@@ -425,4 +520,6 @@ module.exports = {
   marquerErreurSync,
   mirrorLeads,
   chercherLeadMirror,
+  mettreEnCacheCrm,
+  lireCacheCrm,
 };

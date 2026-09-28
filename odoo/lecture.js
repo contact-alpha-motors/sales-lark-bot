@@ -1,4 +1,10 @@
 const { rechercherLire, compter } = require("./rpc");
+const { mettreEnCacheCrm, lireCacheCrm } = require("../memoire/base");
+
+// Odoo injoignable : on bascule sur le cache local au lieu d'echouer.
+function estErreurOdoo(e) {
+  return /Odoo HTTP|Odoo:|ECONN|ETIMEDOUT|timeout|530|50[234]/i.test((e && e.message) || "");
+}
 
 // ---------------------------------------------------------------------------
 // Lecture generalisee du CRM.
@@ -118,10 +124,23 @@ async function interroger({ modele, domaine = [], champs, tri, limite = 20 }) {
   }
   const f = Array.isArray(champs) && champs.length ? champs : conf.champs;
   const lim = Math.min(Math.max(1, limite || 20), 50);
-  const lignes = await rechercherLire(modele, domaine, f, { limit: lim, order: tri || conf.tri });
-  const traduites = lignes.map((l) => traduire(conf, l));
-  await resoudreRelations(conf, traduites);
-  return traduites;
+  const ordre = tri || conf.tri;
+
+  try {
+    const lignes = await rechercherLire(modele, domaine, f, { limit: lim, order: ordre });
+    // Ecriture au passage : on garde les lignes BRUTES (avant libelles) pour que
+    // le filtrage hors-ligne voie les vrais codes Odoo.
+    try { mettreEnCacheCrm(modele, lignes); } catch (e) { console.error("[cache crm] ecriture:", e.message); }
+    const traduites = lignes.map((l) => traduire(conf, l));
+    await resoudreRelations(conf, traduites);
+    return { lignes: traduites, cache: false };
+  } catch (e) {
+    if (!estErreurOdoo(e)) throw e;
+    // Odoo a terre : on sert le cache local (traduit, sans resolution m2m qui
+    // exigerait Odoo), en signalant la fraicheur.
+    const c = lireCacheCrm(modele, { domaine, tri: ordre, limite: lim });
+    return { lignes: c.lignes.map((l) => traduire(conf, l)), cache: true, fetched_at: c.fetched_at, approx: c.approx };
+  }
 }
 
 // Les many2many reviennent en tableaux d'ids ; on remplace chaque id par le
@@ -146,7 +165,15 @@ async function compterCrm({ modele, domaine = [] }) {
   if (!MODELES[modele]) {
     throw new Error(`Modele non autorise : ${modele}. Autorises : ${MODELES_AUTORISES.join(", ")}`);
   }
-  return compter(modele, domaine);
+  try {
+    return { n: await compter(modele, domaine), cache: false };
+  } catch (e) {
+    if (!estErreurOdoo(e)) throw e;
+    // Comptage hors-ligne : approximatif (le cache est paresseux, il ne contient
+    // que ce qui a deja ete lu).
+    const c = lireCacheCrm(modele, { domaine, limite: 50 });
+    return { n: c.total, cache: true, fetched_at: c.fetched_at, approx: c.approx };
+  }
 }
 
 module.exports = { interroger, compterCrm, MODELES_AUTORISES };

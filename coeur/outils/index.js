@@ -143,13 +143,19 @@ const OUTILS = {
       },
     },
     async executer(p) {
+      // Note de fraicheur quand la reponse vient du cache local (Odoo injoignable).
+      const horsLigne = (r) => r.cache
+        ? `[cache local, au ${r.fetched_at || "?"} — Odoo injoignable${r.approx ? ", filtrage approximatif" : ""}] `
+        : "";
       if (p.mode === "compte") {
-        const n = await compterCrm(p);
-        return { texte: `Resultat du comptage : ${n}.` };
+        const r = await compterCrm(p);
+        return { texte: `${horsLigne(r)}Resultat du comptage : ${r.n}.` };
       }
-      const lignes = await interroger(p);
-      if (!lignes.length) return { texte: "Aucun resultat pour cette requete." };
-      return { texte: `${lignes.length} resultat(s) :\n${JSON.stringify(lignes)}` };
+      const r = await interroger(p);
+      if (!r.lignes.length) {
+        return { texte: r.cache ? `${horsLigne(r)}Aucun resultat en cache pour cette requete.` : "Aucun resultat pour cette requete." };
+      }
+      return { texte: `${horsLigne(r)}${r.lignes.length} resultat(s) :\n${JSON.stringify(r.lignes)}` };
     },
   },
 
