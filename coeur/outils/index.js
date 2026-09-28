@@ -432,12 +432,12 @@ const OUTILS = {
       function: {
         name: "rdv",
         description:
-          "Liste ou compte les RENDEZ-VOUS par statut sur une plage : honore (a eu lieu = sub_type scheduled), pris (fixe), confirme, lapin (no-show), tous. " +
-          "Pour « les RDV honores depuis juin », « combien de lapins cette semaine », « RDV pris hier ». Convertis les dates en AAAA-MM-JJ.",
+          "Compte/liste les RENDEZ-VOUS deja PASSES par statut, d'apres le JOURNAL d'evenements, sur une plage : honore (a eu lieu = sub_type scheduled), pris (fixe), confirme, tous. " +
+          "Pour « les RDV honores depuis juin », « combien de RDV pris hier ». Pour ce qui est PREVU a une date (agenda), utilise plutot 'rdv_programmes'. Convertis les dates en AAAA-MM-JJ.",
         parameters: {
           type: "object",
           properties: {
-            statut: { type: "string", enum: ["honore", "pris", "confirme", "lapin", "tous"], description: "Defaut : honore." },
+            statut: { type: "string", enum: ["honore", "pris", "confirme", "tous"], description: "Defaut : honore." },
             debut: { type: "string", description: "Debut AAAA-MM-JJ. Defaut : aujourd'hui." },
             fin: { type: "string", description: "Fin AAAA-MM-JJ. Defaut : = debut." },
             agent: { type: "string", description: "Commercial (nom ou partie), optionnel." },
@@ -453,6 +453,40 @@ const OUTILS = {
       }
       if (!r.lignes.length) return { texte: `${noteCache(r)}Aucun RDV ${r.statut} du ${r.debut} au ${r.fin}${noteAgent(r)}.` };
       return { texte: `${noteCache(r)}${r.lignes.length} RDV ${r.statut} du ${r.debut} au ${r.fin}${noteAgent(r)} :\n${JSON.stringify(r.lignes)}` };
+    },
+  },
+
+  rdv_programmes: {
+    ecriture: false,
+    confirmer: false,
+    schema: {
+      type: "function",
+      function: {
+        name: "rdv_programmes",
+        description:
+          "Les RENDEZ-VOUS PREVUS a l'agenda (calendar.event) pour une date ou une plage : « quels RDV aujourd'hui / le 12 », « combien de RDV demain ». " +
+          "Pour une date PASSEE, renvoie aussi une ESTIMATION des non-venus (programmes - honores) : les no-shows ne sont pas enregistres, donc c'est un agrege, pas nominatif. Convertis les dates en AAAA-MM-JJ ; defaut = aujourd'hui.",
+        parameters: {
+          type: "object",
+          properties: {
+            debut: { type: "string", description: "Date AAAA-MM-JJ. Defaut : aujourd'hui." },
+            fin: { type: "string", description: "Fin de plage AAAA-MM-JJ. Defaut : = debut." },
+            agent: { type: "string", description: "Commercial (nom ou partie), optionnel." },
+            mode: { type: "string", enum: ["liste", "compte"], description: "'compte' pour un nombre, 'liste' (defaut) pour les RDV." },
+          },
+        },
+      },
+    },
+    async executer(p) {
+      const r = await rapports.rdvProgrammes(p);
+      const est = r.estimation
+        ? ` Sur ${r.estimation.programmes} programme(s), ${r.estimation.honores} honore(s) -> ~${r.estimation.non_venus_estimation} non venu(s) (estimation : les no-shows ne sont pas traces).`
+        : "";
+      if (r.mode === "compte") {
+        return { texte: `${noteCache(r)}${r.n} RDV programme(s) du ${r.debut} au ${r.fin}${noteAgent(r)}.${est}` };
+      }
+      if (!r.lignes.length) return { texte: `${noteCache(r)}Aucun RDV programme du ${r.debut} au ${r.fin}${noteAgent(r)}.${est}` };
+      return { texte: `${noteCache(r)}${r.lignes.length} RDV programme(s) du ${r.debut} au ${r.fin}${noteAgent(r)} :\n${JSON.stringify(r.lignes)}${est}` };
     },
   },
 

@@ -91,12 +91,13 @@ async function interactions({ type, debut, fin, agent, mode = "liste", limite = 
   return { mode, type, debut: d, fin: f, agent: agent || null, agentIrresolu, lignes: r.lignes, ...fraicheur(r) };
 }
 
-// --- RDV par statut (honore=scheduled, pris, confirme, lapin, tous) ---------
+// --- RDV par statut (honore=scheduled, pris, confirme, tous) ----------------
+// NB : les no-shows ne sont PAS enregistres (aucun sub_type 'no_show' en base) ;
+// « qui n'est pas venu » se lit via rdvProgrammes (estimation agregee).
 const STATUT_RDV = {
   honore: [["sub_type", "=", "scheduled"]],
   pris: [["sub_type", "in", ["meeting_booked", "video_meeting_booked"]]],
   confirme: [["sub_type", "=", "meeting_confirmed"]],
-  lapin: [["sub_type", "=", "no_show"]],
   tous: [["event_type", "=", "rdv"]],
 };
 async function rdv({ statut = "honore", debut, fin, agent, mode = "liste", limite = 30 } = {}) {
@@ -115,6 +116,37 @@ async function rdv({ statut = "honore", debut, fin, agent, mode = "liste", limit
   return { mode, statut, debut: d, fin: f, agent: agent || null, agentIrresolu, lignes: r.lignes, ...fraicheur(r) };
 }
 
+// --- RDV PROGRAMMES (agenda) : ce qui est prevu pour une date ---------------
+// Source = calendar.event (le vrai agenda : « RDV Physique: Mr X », start, agent).
+// Pour une date PASSEE, on ajoute une estimation des non-venus : programmes moins
+// honores (sub_type scheduled). Approx : les no-shows ne sont pas tracks et les
+// RDV agenda ne sont pas relies aux pistes -> pas de detail nominatif.
+async function rdvProgrammes({ debut, fin, agent, mode = "liste", limite = 50 } = {}) {
+  const { min, max, d, f } = bornes(debut, fin);
+  const { cond, agentIrresolu } = await condAgent(agent);
+  const domaine = [["start", ">=", min], ["start", "<=", max]];
+  if (cond) domaine.push(cond);
+
+  const passe = f < aujourdHui(); // toute la plage est derriere nous
+  let estimation = null;
+  if (passe) {
+    const honDom = [["sub_type", "=", "scheduled"], ["event_date", ">=", min], ["event_date", "<=", max]];
+    if (cond) honDom.push(cond);
+    const [prog, hon] = await Promise.all([
+      compterCrm({ modele: "calendar.event", domaine }),
+      compterCrm({ modele: "dealership.event.log", domaine: honDom }),
+    ]);
+    estimation = { programmes: prog.n, honores: hon.n, non_venus_estimation: Math.max(0, prog.n - hon.n), ...fraicheur(prog, hon) };
+  }
+
+  if (mode === "compte") {
+    const r = await compterCrm({ modele: "calendar.event", domaine });
+    return { mode, debut: d, fin: f, agent: agent || null, agentIrresolu, n: r.n, estimation, passe, ...fraicheur(r) };
+  }
+  const r = await interroger({ modele: "calendar.event", domaine, tri: "start asc", limite });
+  return { mode, debut: d, fin: f, agent: agent || null, agentIrresolu, lignes: r.lignes, estimation, passe, ...fraicheur(r) };
+}
+
 // --- Receptions showroom (fiche hotesse, riche : telephone + details) -------
 async function receptions({ debut, fin, limite = 30 } = {}) {
   const { min, max, d, f } = bornes(debut, fin);
@@ -126,4 +158,4 @@ async function receptions({ debut, fin, limite = 30 } = {}) {
   return { debut: d, fin: f, lignes: r.lignes, ...fraicheur(r) };
 }
 
-module.exports = { statsJour, interactions, rdv, receptions };
+module.exports = { statsJour, interactions, rdv, rdvProgrammes, receptions };
