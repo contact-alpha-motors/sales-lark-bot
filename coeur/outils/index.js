@@ -2,12 +2,22 @@ const requetes = require("../../odoo/requetes");
 const { interroger, compterCrm } = require("../../odoo/lecture");
 const { listerFichesScannees, resumeEnAttente, hashesParFichier } = require("../../memoire/base");
 const { synchroniser } = require("../../odoo/import_appels");
+const rapports = require("../../odoo/rapports");
 const { exporterXlsx } = require("../../documents/xlsx");
 const { exporterPdf } = require("../../documents/pdf");
 const { isoJour, enClair } = require("../dates");
 
 function libelleFormat(format) {
   return format === "pdf" ? "PDF" : "Excel";
+}
+
+// Note « donnee du cache » quand Odoo etait injoignable, et « commercial non
+// trouve » quand le filtre agent n'a pas pu etre resolu.
+function noteCache(r) {
+  return r && r.cache ? `[cache local au ${r.fetched_at || "?"} — Odoo injoignable] ` : "";
+}
+function noteAgent(r) {
+  return r && r.agentIrresolu ? ` (commercial « ${r.agent} » non trouve : filtre ignore)` : "";
 }
 
 // ---------------------------------------------------------------------------
@@ -347,6 +357,129 @@ const OUTILS = {
       if (cumul.echecs.length) msg += ` ${cumul.echecs.length} en echec (gardees en local, retentables).`;
       if (cumul.interrompu) msg += ` ⚠️ Odoo est devenu injoignable : le reste reste garde en local, relance « synchronise » plus tard.`;
       return { texte: msg };
+    },
+  },
+
+  chiffres_jour: {
+    ecriture: false,
+    confirmer: false,
+    schema: {
+      type: "function",
+      function: {
+        name: "chiffres_jour",
+        description:
+          "Tableau de bord d'UNE journee : nombre d'appels, RDV pris, RDV honores (sub_type scheduled), visites showroom, test drives, devis et ventes (montant). " +
+          "Pour « les chiffres de la journee / du jour / d'hier », « bilan de la journee ». Convertis toi-meme la date en AAAA-MM-JJ ; defaut = aujourd'hui.",
+        parameters: {
+          type: "object",
+          properties: {
+            date: { type: "string", description: "Jour AAAA-MM-JJ. Defaut : aujourd'hui." },
+            agent: { type: "string", description: "Limiter a un commercial (nom ou partie), optionnel." },
+          },
+        },
+      },
+    },
+    async executer(p) {
+      const r = await rapports.statsJour(p);
+      const m = r.montant_ventes ? ` (${r.montant_ventes.toLocaleString("fr-FR")} FCFA)` : "";
+      const txt =
+        `${noteCache(r)}Chiffres du ${r.date}${r.agent ? ` — ${r.agent}` : ""}${noteAgent(r)} : ` +
+        `${r.appels} appel(s), ${r.rdv_pris} RDV pris, ${r.rdv_honores} RDV honore(s), ` +
+        `${r.visites} visite(s) showroom, ${r.test_drives} test drive(s), ` +
+        `${r.devis} devis, ${r.ventes} vente(s)${m}.`;
+      return { texte: txt };
+    },
+  },
+
+  interactions: {
+    ecriture: false,
+    confirmer: false,
+    schema: {
+      type: "function",
+      function: {
+        name: "interactions",
+        description:
+          "Liste ou compte les interactions d'un TYPE sur une plage de dates : appel, appel_video, message, rdv, visite, test_drive. " +
+          "Pour « les appels d'hier », « les visites depuis juin », « combien de test drives cette semaine ». Convertis les dates en AAAA-MM-JJ.",
+        parameters: {
+          type: "object",
+          properties: {
+            type: { type: "string", enum: ["appel", "appel_video", "message", "rdv", "visite", "test_drive"] },
+            debut: { type: "string", description: "Debut AAAA-MM-JJ. Defaut : aujourd'hui." },
+            fin: { type: "string", description: "Fin AAAA-MM-JJ. Defaut : = debut." },
+            agent: { type: "string", description: "Commercial (nom ou partie), optionnel." },
+            mode: { type: "string", enum: ["liste", "compte"], description: "'compte' pour un nombre, 'liste' (defaut) pour les lignes." },
+          },
+          required: ["type"],
+        },
+      },
+    },
+    async executer(p) {
+      const r = await rapports.interactions(p);
+      if (r.mode === "compte") {
+        return { texte: `${noteCache(r)}${r.n} ${r.type}(s) du ${r.debut} au ${r.fin}${noteAgent(r)}.` };
+      }
+      if (!r.lignes.length) return { texte: `${noteCache(r)}Aucun(e) ${r.type} du ${r.debut} au ${r.fin}${noteAgent(r)}.` };
+      return { texte: `${noteCache(r)}${r.lignes.length} ${r.type}(s) du ${r.debut} au ${r.fin}${noteAgent(r)} :\n${JSON.stringify(r.lignes)}` };
+    },
+  },
+
+  rdv: {
+    ecriture: false,
+    confirmer: false,
+    schema: {
+      type: "function",
+      function: {
+        name: "rdv",
+        description:
+          "Liste ou compte les RENDEZ-VOUS par statut sur une plage : honore (a eu lieu = sub_type scheduled), pris (fixe), confirme, lapin (no-show), tous. " +
+          "Pour « les RDV honores depuis juin », « combien de lapins cette semaine », « RDV pris hier ». Convertis les dates en AAAA-MM-JJ.",
+        parameters: {
+          type: "object",
+          properties: {
+            statut: { type: "string", enum: ["honore", "pris", "confirme", "lapin", "tous"], description: "Defaut : honore." },
+            debut: { type: "string", description: "Debut AAAA-MM-JJ. Defaut : aujourd'hui." },
+            fin: { type: "string", description: "Fin AAAA-MM-JJ. Defaut : = debut." },
+            agent: { type: "string", description: "Commercial (nom ou partie), optionnel." },
+            mode: { type: "string", enum: ["liste", "compte"], description: "'compte' pour un nombre, 'liste' (defaut) pour les lignes." },
+          },
+        },
+      },
+    },
+    async executer(p) {
+      const r = await rapports.rdv(p);
+      if (r.mode === "compte") {
+        return { texte: `${noteCache(r)}${r.n} RDV ${r.statut} du ${r.debut} au ${r.fin}${noteAgent(r)}.` };
+      }
+      if (!r.lignes.length) return { texte: `${noteCache(r)}Aucun RDV ${r.statut} du ${r.debut} au ${r.fin}${noteAgent(r)}.` };
+      return { texte: `${noteCache(r)}${r.lignes.length} RDV ${r.statut} du ${r.debut} au ${r.fin}${noteAgent(r)} :\n${JSON.stringify(r.lignes)}` };
+    },
+  },
+
+  receptions: {
+    ecriture: false,
+    confirmer: false,
+    schema: {
+      type: "function",
+      function: {
+        name: "receptions",
+        description:
+          "Liste les clients RECUS AU SHOWROOM sur une plage (fiche de reception de l'hotesse : nom, telephone, motif, resultat, recu par). " +
+          "Pour « les clients recus », « qui est passe au showroom depuis lundi ». Convertis les dates en AAAA-MM-JJ. " +
+          "Note : les vieilles fiches sans date de reception n'apparaissent pas dans une plage datee.",
+        parameters: {
+          type: "object",
+          properties: {
+            debut: { type: "string", description: "Debut AAAA-MM-JJ. Defaut : aujourd'hui." },
+            fin: { type: "string", description: "Fin AAAA-MM-JJ. Defaut : = debut." },
+          },
+        },
+      },
+    },
+    async executer(p) {
+      const r = await rapports.receptions(p);
+      if (!r.lignes.length) return { texte: `${noteCache(r)}Aucune reception enregistree (avec date) du ${r.debut} au ${r.fin}.` };
+      return { texte: `${noteCache(r)}${r.lignes.length} reception(s) du ${r.debut} au ${r.fin} :\n${JSON.stringify(r.lignes)}` };
     },
   },
 };
