@@ -84,9 +84,19 @@ function demarrerAdaptateur({ appId, appSecret, etiquette }) {
 
         console.log(`[${etiquette}] traitement : "${texte.slice(0, 60)}"${cheminFichier ? " +fichier" : ""}`);
 
+        const senderId = data.sender?.sender_id?.open_id || null;
+        // Fil de memoire (contexte, resumes, action « oui » en attente) : en
+        // prive le chat_id est deja propre a une personne ; en GROUPE un seul
+        // chat_id est partage par tous, donc on isole chaque utilisateur
+        // (chat_id:open_id) pour ne pas melanger les conversations ni voir un
+        // « oui » confirmer la fiche d'un autre. Les reponses partent, elles,
+        // dans le salon (message.chat_id).
+        const filId =
+          message.chat_type === "group" ? `${message.chat_id}:${senderId || "?"}` : message.chat_id;
+
         const reponse = await traiterMessage({
-          chatId: message.chat_id,
-          senderId: data.sender?.sender_id?.open_id || null,
+          chatId: filId,
+          senderId,
           messageId: message.message_id,
           texte,
           cheminFichier,
