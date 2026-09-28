@@ -55,8 +55,9 @@ function demarrerAdaptateur({ appId, appSecret, etiquette }) {
         return;
       }
 
+      const expediteur = data.sender?.sender_id?.open_id || "?";
       console.log(
-        `[${etiquette}] message recu : id=${message.message_id} type=${message.message_type} chat_type=${message.chat_type} mentions=${(message.mentions || []).length}`
+        `[${etiquette}] message recu : id=${message.message_id} type=${message.message_type} chat_type=${message.chat_type} chat=${message.chat_id} sender=${expediteur} mentions=${(message.mentions || []).length}`
       );
 
       try {
