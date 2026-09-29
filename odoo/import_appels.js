@@ -342,9 +342,13 @@ async function ecrireActionOdoo(a, ctx, resultat) {
     if (a.sous_type) evenement.sub_type = a.sous_type; // null = non categorise
     const agentEvt = a.agent_id || ctx.agent_id;
     if (agentEvt) evenement.user_id = agentEvt;
-    if (a.tag) {
-      const tagId = await resoudreTag(a.tag);
-      evenement.tag_ids = [[6, 0, [tagId]]];
+    // Etiquettes : a.tag (unique, legacy) + a.tags (liste). Chaque nom est
+    // resolu (crm.tag cree au besoin).
+    const nomsTags = [...new Set([...(Array.isArray(a.tags) ? a.tags : []), ...(a.tag ? [a.tag] : [])])];
+    if (nomsTags.length) {
+      const ids = [];
+      for (const nom of nomsTags) { try { ids.push(await resoudreTag(nom)); } catch (e) { console.error("[tag]", nom, e.message); } }
+      if (ids.length) evenement.tag_ids = [[6, 0, ids]];
     }
     eventId = await creer("dealership.event.log", evenement);
     resultat.evenements += 1;

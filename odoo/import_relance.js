@@ -53,6 +53,12 @@ Lis TOUTES les lignes de CETTE page. Ne corrige pas les numeros. Info absente = 
 // Regle : on NE JETTE JAMAIS une ligne. Si le code n'est pas clair, on importe
 // quand meme un appel avec le commentaire garde et un tag "a categoriser".
 // Patterns tolerants aux fautes d'OCR (RDY, RELA..., RELIEN, HRP, KIHA...).
+// Concurrents connus (variante OCR courte -> nom propre pour l'etiquette).
+const CONCURRENTS = [
+  ["SKY", "Sky Motors"], ["ABN", "ABN Motors"], ["TRACTAFRIC", "Tractafric"],
+  ["CAMI", "CAMI Toyota"], ["TOYOTA", "CAMI Toyota"], ["CFAO", "CFAO"],
+];
+
 function analyserCommentaireRelance(commentaire) {
   const t = (commentaire || "").toUpperCase();
   if (!t.replace(/[^A-Z0-9]/g, "")) return { statut: "vide" }; // aucun texte -> pas d'appel
@@ -64,14 +70,36 @@ function analyserCommentaireRelance(commentaire) {
     const video = /VID[EÉ]O|VISIO/.test(t);
     return { statut: "ok", event_type: video ? "video_call" : "call", sous_type: video ? "video_meeting_booked" : "meeting_booked", rdv_date: dateCom, whatsapp };
   }
+
+  // A DEJA ACHETE : achat AVERE (pas une intention « veut acheter »). Chez un
+  // concurrent -> on ressort le concurrent exact via une etiquette dediee.
+  const veutAcheter = /(VEUT|VA|SOUHAIT|COMPTE|AIMERAIT|DESIRE|PROJET|POUR)\s*D?['’]?\s*ACHET/.test(t);
+  if (!veutAcheter && /(A\s*ACHET|DEJA\s*ACHET|ACHET[EÉ]|ACHAT|A\s*PRIS\s*(SA|UN|UNE|LE))/.test(t)) {
+    const conc = CONCURRENTS.find(([k]) => t.includes(k));
+    const tags = ["Déjà acheté"];
+    let note = "Déjà acheté";
+    if (conc) { tags.push("Concurrent", conc[1]); note = `Acheté chez ${conc[1]} (concurrent)`; }
+    return { statut: "ok", event_type: "call", sous_type: "client", note, tags, whatsapp };
+  }
+
   if (/RELA|RAPPEL/.test(t) && !whatsapp) {
     return { statut: "ok", event_type: "call", sous_type: "call_back", callback_date: dateCom, whatsapp };
   }
-  if (/REVIEN|RELIEN|NOUS\s*R/.test(t)) return { statut: "ok", event_type: "call", sous_type: "wiil_come_back", whatsapp };
+  if (/REVIEN|RELIEN|NOUS\s*R|PASSERA|REPASSE/.test(t)) return { statut: "ok", event_type: "call", sous_type: "wiil_come_back", whatsapp };
+
+  // Hors ville / a voyage / demenage : injoignable, avec etiquette.
+  if (/PLUS\s*(DANS|EN)\s*L?A?\s*VILLE|HORS\s*(DE\s*)?(LA\s*)?VILLE|VOYAG|DEMENAG|D[EÉ]M[EÉ]NAG/.test(t)) {
+    return { statut: "ok", event_type: "call", sous_type: "not_online", note: "Hors ville", tags: ["Hors ville"], whatsapp };
+  }
+
   if (/NPI|NLP|PAS\s*INT/.test(t)) return { statut: "ok", event_type: "call", sous_type: "not_interested", whatsapp };
   if (/N[RH]P|HRP|NHA|MRB|NRB/.test(t)) return { statut: "ok", event_type: "call", sous_type: "no_answer", whatsapp };
   if (whatsapp) return { statut: "ok", event_type: "message", sous_type: null, note: "Relance WhatsApp", whatsapp };
-  if (/PROFORMA/.test(t)) return { statut: "ok", event_type: "call", sous_type: "interested", note: "Proforma", whatsapp };
+  if (/PROFORMA|PRO\s*FORMA/.test(t)) return { statut: "ok", event_type: "call", sous_type: "interested", note: "Proforma", tags: ["Proforma"], whatsapp };
+
+  // Commentaire = juste une date (« 29/09/2026 », « relance le 01-10 ») : c'est
+  // un rappel programme, pas un « a categoriser ».
+  if (dateCom) return { statut: "ok", event_type: "call", sous_type: "call_back", callback_date: dateCom, note: `Rappel prevu ${dateCom}`, whatsapp };
 
   // Non categorise : importe quand meme, commentaire garde, marque a revoir.
   return { statut: "ok", event_type: "call", sous_type: null, note: "A categoriser", whatsapp, non_categorise: true };
@@ -209,6 +237,7 @@ async function construirePlanRelance(extraction, indice = "") {
       agent_id: agentEffectif ? agentEffectif.id : null,
       agent_nom: agentEffectif ? agentEffectif.name : (ligne.agent_ligne || plan.agent || "?"),
       non_categorise: !!res.non_categorise,
+      tags: res.tags || null, // etiquettes crm.tag (Deja achete, Concurrent, Hors ville, Proforma...)
       notes,
       rdv: null,
     };
