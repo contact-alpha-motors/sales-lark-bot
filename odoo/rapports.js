@@ -98,6 +98,35 @@ function fraicheur(...res) {
   return { cache: true, fetched_at: fetched };
 }
 
+// JOURNAL : le telephone n'est pas sur l'evenement (contact_phone souvent vide)
+// mais la piste liee (lead_id) l'a. On resout lead_id -> crm.lead.phone. Fiable.
+async function enrichirTelephones(lignes) {
+  try {
+    const cibles = lignes.filter((l) => !l.contact_phone && Array.isArray(l.lead_id) && l.lead_id[0]);
+    if (!cibles.length) return lignes;
+    const ids = [...new Set(cibles.map((l) => l.lead_id[0]))];
+    const leads = await rechercherLire("crm.lead", [["id", "in", ids]], ["id", "phone", "mobile"]);
+    const parId = new Map(leads.map((p) => [p.id, p.phone || p.mobile || null]));
+    for (const l of cibles) { const tel = parId.get(l.lead_id[0]); if (tel) { l.contact_phone = tel; l.telephone = tel; } }
+    return lignes;
+  } catch { return lignes; }
+}
+
+// AGENDA : calendar.event n'a aucun lien client (partner = le commercial). Seul
+// recours : matcher le nom du titre (« RDV Physique: Mr X ») contre les pistes.
+// Au mieux -> on marque tel_incertain. Plafonne pour ne pas spammer Odoo.
+async function enrichirTelAgenda(lignes) {
+  try {
+    for (const l of lignes.slice(0, 25)) {
+      const nom = String(l.name || "").replace(/^.*?:/, "").replace(/\bM(r|me|\.)?\b\.?/gi, "").replace(/\s+/g, " ").trim();
+      if (nom.length < 4) continue;
+      const hit = await rechercherLire("crm.lead", [["name", "ilike", nom]], ["id", "phone", "mobile"], { limit: 2 });
+      if (hit.length === 1) { l.telephone = hit[0].phone || hit[0].mobile || null; l.tel_incertain = true; }
+    }
+    return lignes;
+  } catch { return lignes; }
+}
+
 // --- Chiffres de la journee : appels, RDV pris/honores, visites, ventes -----
 async function statsJour({ date, agent } = {}) {
   const { min, max, d } = bornes(date, date);
@@ -143,7 +172,8 @@ async function interactions({ type, debut, fin, agent, mode = "liste", limite = 
     return { mode, type, debut: d, fin: f, agent: agent || null, agentIrresolu, n: r.n, ...fraicheur(r) };
   }
   const r = await interroger({ modele: "dealership.event.log", domaine, tri: "event_date desc", limite });
-  const lignes = await corrigerReceveur(r.lignes);
+  let lignes = await corrigerReceveur(r.lignes);
+  lignes = await enrichirTelephones(lignes);
   return { mode, type, debut: d, fin: f, agent: agent || null, agentIrresolu, lignes, ...fraicheur(r) };
 }
 
@@ -169,7 +199,8 @@ async function rdv({ statut = "honore", debut, fin, agent, mode = "liste", limit
     return { mode, statut, debut: d, fin: f, agent: agent || null, agentIrresolu, n: r.n, ...fraicheur(r) };
   }
   const r = await interroger({ modele: "dealership.event.log", domaine, tri: "event_date desc", limite });
-  const lignes = await corrigerReceveur(r.lignes);
+  let lignes = await corrigerReceveur(r.lignes);
+  lignes = await enrichirTelephones(lignes);
   return { mode, statut, debut: d, fin: f, agent: agent || null, agentIrresolu, lignes, ...fraicheur(r) };
 }
 
@@ -201,7 +232,8 @@ async function rdvProgrammes({ debut, fin, agent, mode = "liste", limite = 50 } 
     return { mode, debut: d, fin: f, agent: agent || null, agentIrresolu, n: r.n, estimation, passe, ...fraicheur(r) };
   }
   const r = await interroger({ modele: "calendar.event", domaine, tri: "start asc", limite });
-  return { mode, debut: d, fin: f, agent: agent || null, agentIrresolu, lignes: r.lignes, estimation, passe, ...fraicheur(r) };
+  const lignes = await enrichirTelAgenda(r.lignes);
+  return { mode, debut: d, fin: f, agent: agent || null, agentIrresolu, lignes, estimation, passe, ...fraicheur(r) };
 }
 
 // --- Receptions showroom (fiche hotesse, riche : telephone + details) -------
