@@ -217,36 +217,50 @@ async function rdv({ statut = "honore", debut, fin, agent, mode = "liste", limit
   return { mode, statut, debut: d, fin: f, agent: agent || null, agentIrresolu, lignes, ...fraicheur(r) };
 }
 
-// --- RDV PROGRAMMES (agenda) : ce qui est prevu pour une date ---------------
-// Source = calendar.event (le vrai agenda : « RDV Physique: Mr X », start, agent).
-// Pour une date PASSEE, on ajoute une estimation des non-venus : programmes moins
-// honores (sub_type scheduled). Approx : les no-shows ne sont pas tracks et les
-// RDV agenda ne sont pas relies aux pistes -> pas de detail nominatif.
+// --- RDV PROGRAMMES : ce qui est prevu pour une date ------------------------
+// Les RDV vivent dans DEUX modeles : l'agenda (calendar.event, avec heure) ET
+// les activites planifiees (mail.activity type Meeting/RDV, sans heure). On lit
+// les deux, on fusionne et on deduplique par piste (res_id) : une activite qui
+// double un evenement agenda n'est comptee qu'une fois.
+const TYPES_RDV_ACTIVITE = [3, 25]; // activity_type_id : Meeting, RDV
+
+async function collecterRdvPrevus({ min, max, d, f, cond }) {
+  const domCal = [["start", ">=", min], ["start", "<=", max]];
+  if (cond) domCal.push(cond);
+  const domAct = [["res_model", "=", "crm.lead"], ["activity_type_id", "in", TYPES_RDV_ACTIVITE], ["date_deadline", ">=", d], ["date_deadline", "<=", f]];
+  if (cond) domAct.push(cond);
+  const [cal, act] = await Promise.all([
+    interroger({ modele: "calendar.event", domaine: domCal, tri: "start asc", limite: 200 }),
+    interroger({ modele: "mail.activity", domaine: domAct, tri: "date_deadline asc", limite: 200 }),
+  ]);
+  const vus = new Set(cal.lignes.filter((l) => l.res_model === "crm.lead" && l.res_id).map((l) => l.res_id));
+  const extra = act.lignes
+    .filter((a) => a.res_id && !vus.has(a.res_id))
+    .map((a) => ({ id: a.id, name: a.summary, start: a.date_deadline, user_id: a.user_id, res_model: "crm.lead", res_id: a.res_id, source: "activite" }));
+  const lignes = [...cal.lignes, ...extra].sort((x, y) => String(x.start || "").localeCompare(String(y.start || "")));
+  const fr = fraicheur(cal, act);
+  return { lignes, ...fr };
+}
+
 async function rdvProgrammes({ debut, fin, agent, mode = "liste", limite = 50 } = {}) {
   const { min, max, d, f } = bornes(debut, fin);
   const { cond, agentIrresolu } = await condAgent(agent);
-  const domaine = [["start", ">=", min], ["start", "<=", max]];
-  if (cond) domaine.push(cond);
+  const col = await collecterRdvPrevus({ min, max, d, f, cond });
 
   const passe = f < aujourdHui(); // toute la plage est derriere nous
   let estimation = null;
   if (passe) {
     const honDom = [["sub_type", "=", "scheduled"], ["event_date", ">=", min], ["event_date", "<=", max]];
     if (cond) honDom.push(cond);
-    const [prog, hon] = await Promise.all([
-      compterCrm({ modele: "calendar.event", domaine }),
-      compterCrm({ modele: "dealership.event.log", domaine: honDom }),
-    ]);
-    estimation = { programmes: prog.n, honores: hon.n, non_venus_estimation: Math.max(0, prog.n - hon.n), ...fraicheur(prog, hon) };
+    const hon = await compterCrm({ modele: "dealership.event.log", domaine: honDom });
+    estimation = { programmes: col.lignes.length, honores: hon.n, non_venus_estimation: Math.max(0, col.lignes.length - hon.n) };
   }
 
-  if (mode === "compte") {
-    const r = await compterCrm({ modele: "calendar.event", domaine });
-    return { mode, debut: d, fin: f, agent: agent || null, agentIrresolu, n: r.n, estimation, passe, ...fraicheur(r) };
-  }
-  const r = await interroger({ modele: "calendar.event", domaine, tri: "start asc", limite });
-  const lignes = await enrichirTelAgenda(r.lignes);
-  return { mode, debut: d, fin: f, agent: agent || null, agentIrresolu, lignes, estimation, passe, ...fraicheur(r) };
+  const base = { debut: d, fin: f, agent: agent || null, agentIrresolu, estimation, passe, cache: !!col.cache, fetched_at: col.fetched_at };
+  if (mode === "compte") return { mode, ...base, n: col.lignes.length };
+  let lignes = col.lignes.slice(0, Math.min(Math.max(1, limite || 50), 200));
+  lignes = await enrichirTelAgenda(lignes);
+  return { mode, ...base, lignes };
 }
 
 // --- Receptions showroom (fiche hotesse, riche : telephone + details) -------

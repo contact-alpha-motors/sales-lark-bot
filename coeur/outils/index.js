@@ -464,7 +464,7 @@ const OUTILS = {
       function: {
         name: "rdv_programmes",
         description:
-          "Les RENDEZ-VOUS PREVUS a l'agenda (calendar.event) pour une date ou une plage : « quels RDV aujourd'hui / le 12 », « combien de RDV demain ». " +
+          "Les RENDEZ-VOUS PREVUS pour une date ou une plage, depuis les DEUX sources (agenda calendar.event + activites planifiees Meeting/RDV), fusionnes sans doublon : « quels RDV aujourd'hui / le 12 », « combien de RDV demain ». " +
           "Pour une date PASSEE, renvoie aussi une ESTIMATION des non-venus (programmes - honores) : les no-shows ne sont pas enregistres, donc c'est un agrege, pas nominatif. Convertis les dates en AAAA-MM-JJ ; defaut = aujourd'hui.",
         parameters: {
           type: "object",
