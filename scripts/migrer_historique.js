@@ -4,7 +4,7 @@ require("dotenv").config();
 const path = require("path");
 const fs = require("fs");
 const ExcelJS = require("exceljs");
-const { rechercherLire, creer, uid } = require("../odoo/rpc");
+const { rechercherLire, creer, executer, uid } = require("../odoo/rpc");
 const { resoudreUtilisateur } = require("../odoo/requetes");
 const { normaliserTelephone, telephoneValide, analyserResultat, detecterDate } = require("../coeur/referentiel");
 
@@ -28,9 +28,12 @@ const { normaliserTelephone, telephoneValide, analyserResultat, detecterDate } =
 
 const ARGS = process.argv.slice(2);
 const ECRIRE = ARGS.includes("--write");
+const ROLLBACK = ARGS.includes("--rollback");
+const CONFIRM = ARGS.includes("--confirm");
 const FICHIER = ARGS.find((a) => !a.startsWith("--")) || path.join(__dirname, "..", "documents", "Historique_Appels_Complet.xlsx");
 const PROGRES = path.join(__dirname, "migration_progress.json");
 const COL_RESULTAT = "code"; // on prend le code COURANT (pas ancien_code)
+const TAG_MIGRATION = process.env.MIGR_TAG || "Import historique"; // etiquette de retropedalage
 
 function log(...a) { console.log(...a); }
 
@@ -127,7 +130,30 @@ function sauverProgres(set) {
   try { fs.writeFileSync(PROGRES, JSON.stringify([...set])); } catch (e) { log("! progres:", e.message); }
 }
 
+// Retropedalage : supprime tout ce que la migration a cree, via l'etiquette.
+// Dry-run par defaut (compte) ; --confirm pour supprimer vraiment.
+async function rollback() {
+  log(`\n=== ROLLBACK migration (etiquette « ${TAG_MIGRATION} ») ${CONFIRM ? "(SUPPRESSION REELLE)" : "(DRY-RUN)"} ===`);
+  const tag = await rechercherLire("crm.tag", [["name", "=ilike", TAG_MIGRATION]], ["id"], { limit: 1 });
+  if (!tag.length) { log(`Aucune etiquette « ${TAG_MIGRATION} » : rien a annuler.`); return; }
+  const tagId = tag[0].id;
+  const evts = await rechercherLire("dealership.event.log", [["tag_ids", "in", [tagId]]], ["id"], { limit: 100000 });
+  const leads = await rechercherLire("crm.lead", [["tag_ids", "in", [tagId]]], ["id"], { limit: 100000 });
+  log(`A supprimer : ${evts.length} evenements + ${leads.length} pistes creees par la migration.`);
+  if (!CONFIRM) { log(`(DRY-RUN) Ajoute --confirm pour supprimer reellement.\n`); return; }
+  const unlink = async (modele, ids) => {
+    for (let i = 0; i < ids.length; i += 100) {
+      await executer(modele, "unlink", [ids.slice(i, i + 100)]);
+      if (i % 1000 === 0) log(`  ... ${modele} ${Math.min(i + 100, ids.length)}/${ids.length}`);
+    }
+  };
+  await unlink("dealership.event.log", evts.map((e) => e.id)); // d'abord les evenements
+  await unlink("crm.lead", leads.map((l) => l.id));            // puis les pistes creees
+  log(`\n=== ROLLBACK termine : ${evts.length} evenements et ${leads.length} pistes supprimes. ===\n`);
+}
+
 async function main() {
+  if (ROLLBACK) { await uid().catch(() => {}); return rollback(); }
   log(`\n=== Migration historique appels ${ECRIRE ? "(ECRITURE REELLE)" : "(DRY-RUN, 0 ecriture)"} ===`);
   log(`Fichier : ${FICHIER}\n`);
   const brutes = await lireLignes(FICHIER);
@@ -176,6 +202,8 @@ async function main() {
   const pisteParTel = new Map(existants); // tel -> lead_id (complete au fur et a mesure pour les nouveaux)
   const agentCache = new Map();
   const resultat = { pistes_creees: 0, evenements: 0, echecs: 0, ignores_repris: 0 };
+  const tagMigrId = await resoudreTag(TAG_MIGRATION);
+  log(`Etiquette de retropedalage : « ${TAG_MIGRATION} » (#${tagMigrId}) posee sur chaque piste creee et chaque appel.`);
   let i = 0;
   for (const e of eligibles) {
     i++;
@@ -189,6 +217,7 @@ async function main() {
           name: (e.ligne.nom && String(e.ligne.nom).trim()) || `Prospect ${e.tel}`,
           contact_name: (e.ligne.nom && String(e.ligne.nom).trim()) || undefined,
           phone: e.tel, type: "lead",
+          tag_ids: [[6, 0, [tagMigrId]]], // marque pour retropedalage (piste CREEE)
         });
         pisteParTel.set(e.tel, leadId);
         resultat.pistes_creees++;
@@ -206,7 +235,9 @@ async function main() {
       };
       if (e.res.sous_type) evenement.sub_type = e.res.sous_type;
       if (userId) evenement.user_id = userId;
-      if (e.res.tag) { try { evenement.tag_ids = [[6, 0, [await resoudreTag(e.res.tag)]]]; } catch {} }
+      const tagsEvt = [tagMigrId]; // marque de retropedalage sur CHAQUE appel
+      if (e.res.tag) { try { tagsEvt.push(await resoudreTag(e.res.tag)); } catch {} }
+      evenement.tag_ids = [[6, 0, tagsEvt]];
       await creer("dealership.event.log", evenement);
       resultat.evenements++;
       fait.add(cle);
