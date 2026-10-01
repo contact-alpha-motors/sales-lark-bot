@@ -1,6 +1,6 @@
 const requetes = require("../../odoo/requetes");
 const { interroger, compterCrm } = require("../../odoo/lecture");
-const { listerFichesScannees, resumeEnAttente, hashesParFichier } = require("../../memoire/base");
+const { listerFichesScannees, resumeEnAttente, hashesParFichier, coutIaParModele } = require("../../memoire/base");
 const { synchroniser } = require("../../odoo/import_appels");
 const rapports = require("../../odoo/rapports");
 const { exporterXlsx } = require("../../documents/xlsx");
@@ -188,6 +188,38 @@ const OUTILS = {
       const l = listerFichesScannees(p.limite || 20);
       if (!l.length) return { texte: "Aucune fiche scannee en memoire locale." };
       return { texte: l.map((x) => `${x.jour} — ${x.fichier} (${x.nb_lignes} lignes)`).join("\n") };
+    },
+  },
+
+  cout_ia: {
+    ecriture: false,
+    confirmer: false,
+    schema: {
+      type: "function",
+      function: {
+        name: "cout_ia",
+        description:
+          "Coût des appels aux modèles IA (OpenRouter), détaillé PAR MODÈLE et par tâche (conversation / vision / résumé), sur aujourd'hui, les 7 derniers jours et le total. " +
+          "Pour « combien coûte le bot », « coût IA », « combien nous coûte GLM / la vision », « le budget ». 100% local.",
+        parameters: { type: "object", properties: {} },
+      },
+    },
+    async executer() {
+      const r = coutIaParModele();
+      const d = (x) => `$${(x || 0).toFixed(4)}`;
+      const bloc = (titre, p) => {
+        const lignes = [`${titre} — total ${d(p.total.c)} (${p.total.n} appels)`];
+        for (const l of p.lignes) {
+          lignes.push(`   • ${l.tache} ${l.modele} : ${d(l.c)} — ${l.n} appel(s), ${l.t} tok`);
+        }
+        return lignes.join("\n");
+      };
+      const texte = [
+        bloc("Aujourd'hui", r.jour),
+        bloc("7 derniers jours", r.semaine),
+        bloc("Depuis le début", r.total),
+      ].join("\n\n");
+      return { texte };
     },
   },
 

@@ -490,6 +490,27 @@ function coutIa() {
   };
 }
 
+// Detail du cout IA par (tache, modele) pour jour / semaine / tout : permet de
+// voir ce que chaque modele coute (ex. conversation GLM vs vision Gemini).
+function coutIaParModele() {
+  const q = (where) =>
+    db.prepare(
+      `SELECT COALESCE(tache,'?') tache, COALESCE(modele,'?') modele, COUNT(*) n,
+              COALESCE(SUM(cout),0) c, COALESCE(SUM(total_tokens),0) t
+         FROM journal_ia ${where}
+        GROUP BY tache, modele ORDER BY c DESC`
+    ).all();
+  const tot = (where) =>
+    db.prepare(`SELECT COALESCE(SUM(cout),0) c, COUNT(*) n FROM journal_ia ${where}`).get();
+  const JOUR = "WHERE DATE(created_at,'+1 hours') = DATE(CURRENT_TIMESTAMP,'+1 hours')";
+  const SEM = "WHERE created_at >= DATETIME(CURRENT_TIMESTAMP,'-7 days')";
+  return {
+    jour: { lignes: q(JOUR), total: tot(JOUR) },
+    semaine: { lignes: q(SEM), total: tot(SEM) },
+    total: { lignes: q(""), total: tot("") },
+  };
+}
+
 module.exports = {
   enregistrerMessage,
   messageDejaTraite,
@@ -505,6 +526,7 @@ module.exports = {
   journaliser,
   enregistrerAppelIa,
   coutIa,
+  coutIaParModele,
   enregistrerOcr,
   lireOcr,
   listerFichesScannees,
