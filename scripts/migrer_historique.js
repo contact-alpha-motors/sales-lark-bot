@@ -31,7 +31,9 @@ const ECRIRE = ARGS.includes("--write");
 const ROLLBACK = ARGS.includes("--rollback");
 const CONFIRM = ARGS.includes("--confirm");
 const FICHIER = ARGS.find((a) => !a.startsWith("--")) || path.join(__dirname, "..", "documents", "Historique_Appels_Complet.xlsx");
-const PROGRES = path.join(__dirname, "migration_progress.json");
+// Fichier de reprise sur le volume persistant (/app/data) : survit aux
+// redemarrages, sinon une relance recreerait des doublons d'evenements.
+const PROGRES = path.join(path.dirname(process.env.DATABASE_PATH || path.join(__dirname, "..", "data", "assistant.db")), "migration_progress.json");
 const COL_RESULTAT = "code"; // on prend le code COURANT (pas ancien_code)
 const TAG_MIGRATION = process.env.MIGR_TAG || "Import historique"; // etiquette de retropedalage
 
