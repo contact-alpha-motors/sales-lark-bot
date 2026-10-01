@@ -63,7 +63,9 @@ const MODELES = {
   },
   "calendar.event": {
     tri: "start asc",
-    champs: ["id", "name", "start", "stop", "user_id", "opportunity_id"],
+    // res_model/res_id = document lie (souvent crm.lead) : c'est LE vrai lien
+    // vers la piste, renseigne meme quand opportunity_id est vide.
+    champs: ["id", "name", "start", "stop", "user_id", "opportunity_id", "res_model", "res_id"],
   },
   "mail.activity": {
     tri: "date_deadline asc",

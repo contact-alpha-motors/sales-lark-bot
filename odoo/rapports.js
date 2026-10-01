@@ -118,13 +118,16 @@ async function enrichirTelephones(lignes) {
 // (marque tel_incertain). Plafonne le matching pour ne pas spammer Odoo.
 async function enrichirTelAgenda(lignes) {
   try {
-    // 1) Lien direct opportunity_id -> crm.lead.phone (fiable).
-    const avecOpp = lignes.filter((l) => Array.isArray(l.opportunity_id) && l.opportunity_id[0]);
-    if (avecOpp.length) {
-      const ids = [...new Set(avecOpp.map((l) => l.opportunity_id[0]))];
+    // 1) Lien vers la piste : res_model=crm.lead + res_id (le vrai lien, present
+    // meme quand opportunity_id est vide), sinon opportunity_id. -> crm.lead.phone.
+    const leadDe = (l) => (l.res_model === "crm.lead" && l.res_id ? l.res_id
+      : (Array.isArray(l.opportunity_id) && l.opportunity_id[0] ? l.opportunity_id[0] : null));
+    const avecLien = lignes.filter((l) => leadDe(l));
+    if (avecLien.length) {
+      const ids = [...new Set(avecLien.map(leadDe))];
       const leads = await rechercherLire("crm.lead", [["id", "in", ids]], ["id", "phone", "mobile"]);
       const parId = new Map(leads.map((p) => [p.id, p.phone || p.mobile || null]));
-      for (const l of avecOpp) { const t = parId.get(l.opportunity_id[0]); if (t) l.telephone = t; }
+      for (const l of avecLien) { const t = parId.get(leadDe(l)); if (t) l.telephone = t; }
     }
     // 2) Sans lien -> matching par nom du titre (au mieux, incertain).
     for (const l of lignes.filter((x) => !x.telephone).slice(0, 20)) {
