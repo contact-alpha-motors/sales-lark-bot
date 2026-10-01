@@ -432,12 +432,14 @@ const OUTILS = {
       function: {
         name: "rdv",
         description:
-          "Compte/liste les RENDEZ-VOUS deja PASSES par statut, d'apres le JOURNAL d'evenements, sur une plage : honore (a eu lieu = sub_type scheduled), pris (fixe), confirme, tous. " +
-          "Pour « les RDV honores depuis juin », « combien de RDV pris hier ». Pour ce qui est PREVU a une date (agenda), utilise plutot 'rdv_programmes'. Convertis les dates en AAAA-MM-JJ.",
+          "Compte/liste les RENDEZ-VOUS par statut sur une plage. " +
+          "obtenus/pris = RDV DECROCHES pendant la periode (par date de PRISE du RDV ; union agenda+activites+journal, dedupliques par piste) -> pour « combien de RDV obtenus la semaine passee ». " +
+          "honore = a eu lieu (sub_type scheduled, par date du RDV) ; confirme ; tous. " +
+          "Pour ce qui est PREVU a une date (agenda du jour), utilise plutot 'rdv_programmes'. Convertis les dates en AAAA-MM-JJ.",
         parameters: {
           type: "object",
           properties: {
-            statut: { type: "string", enum: ["honore", "pris", "confirme", "tous"], description: "Defaut : honore." },
+            statut: { type: "string", enum: ["obtenus", "pris", "honore", "confirme", "tous"], description: "Defaut : honore. 'obtenus'/'pris' = RDV decroches (par date de prise)." },
             debut: { type: "string", description: "Debut AAAA-MM-JJ. Defaut : aujourd'hui." },
             fin: { type: "string", description: "Fin AAAA-MM-JJ. Defaut : = debut." },
             agent: { type: "string", description: "Commercial (nom ou partie), optionnel." },
@@ -447,12 +449,14 @@ const OUTILS = {
       },
     },
     async executer(p) {
-      const r = await rapports.rdv(p);
+      const estObtenus = p.statut === "pris" || p.statut === "obtenus";
+      const r = estObtenus ? await rapports.rdvObtenus(p) : await rapports.rdv(p);
+      const lib = estObtenus ? "RDV obtenus" : `RDV ${r.statut}`;
       if (r.mode === "compte") {
-        return { texte: `${noteCache(r)}${r.n} RDV ${r.statut} du ${r.debut} au ${r.fin}${noteAgent(r)}.` };
+        return { texte: `${noteCache(r)}${r.n} ${lib} du ${r.debut} au ${r.fin}${noteAgent(r)}.` };
       }
-      if (!r.lignes.length) return { texte: `${noteCache(r)}Aucun RDV ${r.statut} du ${r.debut} au ${r.fin}${noteAgent(r)}.` };
-      return { texte: `${noteCache(r)}${r.lignes.length} RDV ${r.statut} du ${r.debut} au ${r.fin}${noteAgent(r)} :\n${JSON.stringify(r.lignes)}` };
+      if (!r.lignes.length) return { texte: `${noteCache(r)}Aucun ${lib} du ${r.debut} au ${r.fin}${noteAgent(r)}.` };
+      return { texte: `${noteCache(r)}${r.lignes.length} ${lib} du ${r.debut} au ${r.fin}${noteAgent(r)} :\n${JSON.stringify(r.lignes)}` };
     },
   },
 

@@ -263,6 +263,39 @@ async function rdvProgrammes({ debut, fin, agent, mode = "liste", limite = 50 } 
   return { mode, ...base, lignes };
 }
 
+// --- RDV OBTENUS : RDV PRIS sur une periode (par date de prise) --------------
+// « Combien de RDV obtenus cette semaine » = RDV bookes pendant la periode, peu
+// importe la date du rendez-vous. Un RDV peut etre enregistre dans 3 modeles a
+// la fois (agenda + activite + journal) : on unionne les 3 par create_date et on
+// DEDUPLIQUE par piste (res_id / lead_id) pour ne compter chaque RDV qu'une fois.
+async function rdvObtenus({ debut, fin, agent, mode = "liste", limite = 60 } = {}) {
+  const { min, max, d, f } = bornes(debut, fin);
+  const { cond, agentIrresolu } = await condAgent(agent);
+  const dc = [["create_date", ">=", min], ["create_date", "<=", max]];
+  const domCal = cond ? [...dc, cond] : dc;
+  const domAct = [["res_model", "=", "crm.lead"], ["activity_type_id", "in", TYPES_RDV_ACTIVITE], ...dc, ...(cond ? [cond] : [])];
+  const domLog = [["sub_type", "in", ["meeting_booked", "video_meeting_booked"]], ...dc, ...(cond ? [cond] : [])];
+
+  const [cal, act, log] = await Promise.all([
+    interroger({ modele: "calendar.event", domaine: domCal, champs: ["id", "name", "create_date", "user_id", "res_model", "res_id"], tri: "create_date asc", limite: 300 }),
+    interroger({ modele: "mail.activity", domaine: domAct, champs: ["id", "summary", "create_date", "user_id", "res_id"], tri: "create_date asc", limite: 300 }),
+    interroger({ modele: "dealership.event.log", domaine: domLog, champs: ["id", "x_studio_nom", "create_date", "user_id", "lead_id"], tri: "create_date asc", limite: 300 }),
+  ]);
+
+  const parLead = new Map();
+  const orphelins = []; // sans piste identifiable -> comptes a part (pas de dedup)
+  const ajoute = (lead, row) => { if (lead != null) { if (!parLead.has(lead)) parLead.set(lead, row); } else orphelins.push(row); };
+  const nomAgent = (u) => (Array.isArray(u) ? u[1] : null);
+  for (const l of cal.lignes) ajoute(l.res_model === "crm.lead" ? l.res_id : null, { nom: l.name, quand: l.create_date, agent: nomAgent(l.user_id), source: "agenda" });
+  for (const a of act.lignes) ajoute(a.res_id || null, { nom: a.summary, quand: a.create_date, agent: nomAgent(a.user_id), source: "activite" });
+  for (const e of log.lignes) ajoute(Array.isArray(e.lead_id) ? e.lead_id[0] : null, { nom: e.x_studio_nom, quand: e.create_date, agent: nomAgent(e.user_id), source: "journal" });
+
+  const lignes = [...parLead.values(), ...orphelins];
+  const base = { statut: "obtenus", debut: d, fin: f, agent: agent || null, agentIrresolu, ...fraicheur(cal, act, log) };
+  if (mode === "compte") return { mode, ...base, n: lignes.length };
+  return { mode, ...base, lignes: lignes.slice(0, Math.min(Math.max(1, limite || 60), 200)) };
+}
+
 // --- Receptions showroom (fiche hotesse, riche : telephone + details) -------
 async function receptions({ debut, fin, limite = 30 } = {}) {
   const { min, max, d, f } = bornes(debut, fin);
@@ -274,4 +307,4 @@ async function receptions({ debut, fin, limite = 30 } = {}) {
   return { debut: d, fin: f, lignes: r.lignes, ...fraicheur(r) };
 }
 
-module.exports = { statsJour, interactions, rdv, rdvProgrammes, receptions };
+module.exports = { statsJour, interactions, rdv, rdvObtenus, rdvProgrammes, receptions };
