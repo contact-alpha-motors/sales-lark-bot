@@ -112,12 +112,22 @@ async function enrichirTelephones(lignes) {
   } catch { return lignes; }
 }
 
-// AGENDA : calendar.event n'a aucun lien client (partner = le commercial). Seul
-// recours : matcher le nom du titre (« RDV Physique: Mr X ») contre les pistes.
-// Au mieux -> on marque tel_incertain. Plafonne pour ne pas spammer Odoo.
+// AGENDA : beaucoup de calendar.event SONT lies a une piste via opportunity_id
+// -> on prend le telephone de la piste (FIABLE). Pour les rares RDV non lies
+// (recents), repli au mieux : matcher le nom du titre contre les pistes
+// (marque tel_incertain). Plafonne le matching pour ne pas spammer Odoo.
 async function enrichirTelAgenda(lignes) {
   try {
-    for (const l of lignes.slice(0, 25)) {
+    // 1) Lien direct opportunity_id -> crm.lead.phone (fiable).
+    const avecOpp = lignes.filter((l) => Array.isArray(l.opportunity_id) && l.opportunity_id[0]);
+    if (avecOpp.length) {
+      const ids = [...new Set(avecOpp.map((l) => l.opportunity_id[0]))];
+      const leads = await rechercherLire("crm.lead", [["id", "in", ids]], ["id", "phone", "mobile"]);
+      const parId = new Map(leads.map((p) => [p.id, p.phone || p.mobile || null]));
+      for (const l of avecOpp) { const t = parId.get(l.opportunity_id[0]); if (t) l.telephone = t; }
+    }
+    // 2) Sans lien -> matching par nom du titre (au mieux, incertain).
+    for (const l of lignes.filter((x) => !x.telephone).slice(0, 20)) {
       const nom = String(l.name || "").replace(/^.*?:/, "").replace(/\bM(r|me|\.)?\b\.?/gi, "").replace(/\s+/g, " ").trim();
       if (nom.length < 4) continue;
       const hit = await rechercherLire("crm.lead", [["name", "ilike", nom]], ["id", "phone", "mobile"], { limit: 2 });
