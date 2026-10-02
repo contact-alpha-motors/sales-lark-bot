@@ -189,6 +189,7 @@ async function rollback() {
   };
   await unlink("dealership.event.log", evts.map((e) => e.id)); // d'abord les evenements
   await unlink("crm.lead", leadsASupprimer);                   // puis les pistes CREEES uniquement
+  try { fs.unlinkSync(PROGRES); log("Fichier de reprise reinitialise (re-import repartira de zero)."); } catch {}
   log(`\n=== ROLLBACK termine : ${evts.length} evenements et ${leadsASupprimer.length} pistes supprimes. ===\n`);
 }
 
