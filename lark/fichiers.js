@@ -18,7 +18,7 @@ async function telechargerPieceJointe(client, messageId, fileKey, type, nomFichi
 }
 
 async function envoyerTexte(client, chatId, texte) {
-  await client.im.v1.message.create({
+  const r = await client.im.v1.message.create({
     params: { receive_id_type: "chat_id" },
     data: {
       receive_id: chatId,
@@ -26,6 +26,12 @@ async function envoyerTexte(client, chatId, texte) {
       content: JSON.stringify({ text: texte }),
     },
   });
+  // Le SDK Lark NE LANCE PAS d'erreur quand l'API refuse (code != 0) : on le
+  // detecte nous-memes, sinon un envoi refuse passe pour un succes.
+  if (r && typeof r.code === "number" && r.code !== 0) {
+    throw new Error(`Lark envoi refuse (chat ${chatId}) code=${r.code} msg=${r.msg}`);
+  }
+  return r;
 }
 
 // Envoi d'un fichier local dans une conversation. Meme mecanique que la
