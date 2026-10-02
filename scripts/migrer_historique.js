@@ -135,14 +135,30 @@ function sauverProgres(set) {
 // Retropedalage : supprime tout ce que la migration a cree, via l'etiquette.
 // Dry-run par defaut (compte) ; --confirm pour supprimer vraiment.
 async function rollback() {
-  log(`\n=== ROLLBACK migration (etiquette « ${TAG_MIGRATION} ») ${CONFIRM ? "(SUPPRESSION REELLE)" : "(DRY-RUN)"} ===`);
+  log(`\n=== ROLLBACK migration ${CONFIRM ? "(SUPPRESSION REELLE)" : "(DRY-RUN)"} ===`);
   const tag = await rechercherLire("crm.tag", [["name", "=ilike", TAG_MIGRATION]], ["id"], { limit: 1 });
-  if (!tag.length) { log(`Aucune etiquette « ${TAG_MIGRATION} » : rien a annuler.`); return; }
-  const tagId = tag[0].id;
-  const evts = await rechercherLire("dealership.event.log", [["tag_ids", "in", [tagId]]], ["id"], { limit: 100000 });
-  const leads = await rechercherLire("crm.lead", [["tag_ids", "in", [tagId]]], ["id"], { limit: 100000 });
-  log(`A supprimer : ${evts.length} evenements + ${leads.length} pistes creees par la migration.`);
+  const tagId = tag.length ? tag[0].id : null;
+  // Evenements de la migration : etiquette OU marque [histo] dans les notes
+  // (le 1er run n'etait pas taggé mais porte quand meme la marque [histo]).
+  const dom = tagId ? ["|", ["tag_ids", "in", [tagId]], ["notes", "like", "[histo "]] : [["notes", "like", "[histo "]];
+  const evts = await rechercherLire("dealership.event.log", dom, ["id", "lead_id"], { limit: 100000 });
+  const leadIds = [...new Set(evts.map((e) => (Array.isArray(e.lead_id) ? e.lead_id[0] : null)).filter(Boolean))];
+
+  // Parmi les pistes touchees, celles qui ont AUSSI un evenement NON-migration
+  // etaient PRE-EXISTANTES (enrichies) -> on les GARDE (on retire juste leurs
+  // appels [histo]). Celles dont TOUS les evenements sont [histo] ont ete
+  // CREEES par la migration -> a supprimer.
+  const preexist = new Set();
+  for (let i = 0; i < leadIds.length; i += 200) {
+    const chunk = leadIds.slice(i, i + 200);
+    const autres = await rechercherLire("dealership.event.log", ["&", ["lead_id", "in", chunk], "!", ["notes", "like", "[histo "]], ["lead_id"], { limit: 100000 });
+    autres.forEach((a) => { if (Array.isArray(a.lead_id)) preexist.add(a.lead_id[0]); });
+  }
+  const leadsASupprimer = leadIds.filter((id) => !preexist.has(id));
+  log(`A supprimer : ${evts.length} evenements + ${leadsASupprimer.length} pistes CREEES par la migration.`);
+  log(`Conservees : ${leadIds.length - leadsASupprimer.length} pistes pre-existantes (enrichies) — seuls leurs appels [histo] partent.`);
   if (!CONFIRM) { log(`(DRY-RUN) Ajoute --confirm pour supprimer reellement.\n`); return; }
+
   const unlink = async (modele, ids) => {
     for (let i = 0; i < ids.length; i += 100) {
       await executer(modele, "unlink", [ids.slice(i, i + 100)]);
@@ -150,8 +166,8 @@ async function rollback() {
     }
   };
   await unlink("dealership.event.log", evts.map((e) => e.id)); // d'abord les evenements
-  await unlink("crm.lead", leads.map((l) => l.id));            // puis les pistes creees
-  log(`\n=== ROLLBACK termine : ${evts.length} evenements et ${leads.length} pistes supprimes. ===\n`);
+  await unlink("crm.lead", leadsASupprimer);                   // puis les pistes CREEES uniquement
+  log(`\n=== ROLLBACK termine : ${evts.length} evenements et ${leadsASupprimer.length} pistes supprimes. ===\n`);
 }
 
 async function main() {
@@ -201,6 +217,19 @@ async function main() {
 
   // 3) ECRITURE.
   const fait = chargerProgres();
+  // Idempotence ROBUSTE : on lit dans Odoo les lignes DEJA importees (marque
+  // « [histo <source> L<n>] ») et on les marque faites. Ainsi relancer --write
+  // ne recree JAMAIS de doublon, meme si le fichier de reprise est perdu ou si
+  // un run precedent n'etait pas taggé.
+  try {
+    const deja = await rechercherLire("dealership.event.log", [["notes", "like", "[histo "]], ["notes"], { limit: 100000 });
+    let seed = 0;
+    for (const e of deja) {
+      const m = String(e.notes || "").match(/\[histo\s+(.+?)\s+L(\d+)\]/);
+      if (m) { fait.add(`${m[1]}#${m[2]}`); seed += 1; }
+    }
+    log(`Idempotence : ${seed} ligne(s) deja presentes dans Odoo -> sautees.`);
+  } catch (e) { log(`! lecture idempotence Odoo: ${e.message} (on continue sur le fichier de reprise seul)`); }
   const pisteParTel = new Map(existants); // tel -> lead_id (complete au fur et a mesure pour les nouveaux)
   const agentCache = new Map();
   const resultat = { pistes_creees: 0, evenements: 0, echecs: 0, ignores_repris: 0 };
