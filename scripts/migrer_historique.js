@@ -4,7 +4,7 @@ require("dotenv").config();
 const path = require("path");
 const fs = require("fs");
 const ExcelJS = require("exceljs");
-const { rechercherLire, creer, executer, uid } = require("../odoo/rpc");
+const { rechercherLire, creer, executer, mettreAJour, uid } = require("../odoo/rpc");
 const { resoudreUtilisateur } = require("../odoo/requetes");
 const { normaliserTelephone, telephoneValide, analyserResultat, detecterDate } = require("../coeur/referentiel");
 
@@ -30,6 +30,8 @@ const ARGS = process.argv.slice(2);
 const ECRIRE = ARGS.includes("--write");
 const ROLLBACK = ARGS.includes("--rollback");
 const CONFIRM = ARGS.includes("--confirm");
+// --limit N : n'ecrire que N lignes (test). 0 = tout.
+const LIMITE = (() => { const i = ARGS.indexOf("--limit"); return i >= 0 && ARGS[i + 1] ? Number(ARGS[i + 1]) : 0; })();
 const FICHIER = ARGS.find((a) => !a.startsWith("--")) || path.join(__dirname, "..", "documents", "Historique_Appels_Complet.xlsx");
 // Fichier de reprise sur le volume persistant (/app/data) : survit aux
 // redemarrages, sinon une relance recreerait des doublons d'evenements.
@@ -38,6 +40,13 @@ const COL_RESULTAT = "code"; // on prend le code COURANT (pas ancien_code)
 const TAG_MIGRATION = process.env.MIGR_TAG || "Import historique"; // etiquette de retropedalage
 const RES_MODEL_LEAD = 804; // ir.model id de crm.lead (pour mail.activity)
 const TYPE_ACT_RDV = Number(process.env.MIGR_TYPE_RDV || 25); // activity_type_id « RDV »
+const TYPE_ACT_APPEL = Number(process.env.MIGR_TYPE_APPEL || 2); // activity_type_id « Call »
+// Champ Studio « Statut appel » sur crm.lead + correspondance code -> valeur.
+const CHAMP_STATUT = "x_studio_selection_field_3j5_1igm2769i";
+const STATUT_FICHE = {
+  NRP: "Ne répond pas", PL: "PL", PI: "Pas intéressé", NR: "Nous revient",
+  RDV: "RDV", BL: " Budget Limité", ND: "Non Disponible",
+};
 
 function log(...a) { console.log(...a); }
 
@@ -262,6 +271,7 @@ async function main() {
   let i = 0;
   for (const e of eligibles) {
     i++;
+    if (LIMITE && resultat.evenements >= LIMITE) { log(`Limite de test atteinte (${LIMITE}). Arret.`); break; }
     const cle = `${e.ligne.source_fiche || "?"}#${e.ligne._n}`;
     if (fait.has(cle)) { resultat.ignores_repris++; continue; }
     try {
@@ -295,22 +305,32 @@ async function main() {
       evenement.tag_ids = [[6, 0, tagsEvt]];
       await creer("dealership.event.log", evenement);
       resultat.evenements++;
-      // RDV -> activite planifiee LIEE a la piste (res_model/res_id), comme les
-      // vrais RDV qui vivent aussi dans mail.activity. Bonus : son echec ne
-      // bloque pas l'import.
-      if (e.res.sous_type === "meeting_booked" || e.res.sous_type === "video_meeting_booked") {
-        try {
-          await creer("mail.activity", {
-            res_model_id: RES_MODEL_LEAD,
-            res_id: leadId,
-            activity_type_id: TYPE_ACT_RDV,
-            date_deadline: dateIso(e.ligne.date_rdv_pris) || e.date,
-            summary: `RDV - ${(e.ligne.nom && String(e.ligne.nom).trim()) || e.tel}`,
-            ...(userId ? { user_id: userId } : {}),
-          });
-          resultat.activites++;
-        } catch (err2) { /* activite = bonus */ }
-      }
+
+      // (2) Activite LIEE a la piste (res_model/res_id), creee puis marquee
+      // FAITE -> apparait dans l'HISTORIQUE de la fiche (pas dans les « a faire »),
+      // pour TOUT appel. Bonus : un echec ne bloque pas l'import.
+      try {
+        const estRdv = e.res.sous_type === "meeting_booked" || e.res.sous_type === "video_meeting_booked";
+        const dd = (estRdv && dateIso(e.ligne.date_rdv_pris)) || e.date;
+        const actId = await creer("mail.activity", {
+          res_model_id: RES_MODEL_LEAD, res_id: leadId,
+          activity_type_id: estRdv ? TYPE_ACT_RDV : TYPE_ACT_APPEL,
+          date_deadline: dd,
+          summary: `${estRdv ? "RDV" : "Appel"} - ${(e.ligne.nom && String(e.ligne.nom).trim()) || e.tel}`,
+          ...(userId ? { user_id: userId } : {}),
+        });
+        try { await executer("mail.activity", "action_feedback", [[actId]], { feedback: String(e.ligne.commentaire || e.res.canon || "Historique").slice(0, 200) }); } catch {}
+        resultat.activites++;
+      } catch (err2) { /* activite = bonus */ }
+
+      // (3) Statut d'appel sur la fiche prospect (derniere ligne traitee du
+      // numero = la plus recente).
+      try {
+        let sv = STATUT_FICHE[e.res.canon] || null;
+        if (e.res.sous_type === "video_meeting_booked") sv = "RDV Vidéo";
+        if (sv) await mettreAJour("crm.lead", leadId, { [CHAMP_STATUT]: sv });
+      } catch (err3) { /* statut = bonus */ }
+
       fait.add(cle);
     } catch (err) {
       resultat.echecs++;
