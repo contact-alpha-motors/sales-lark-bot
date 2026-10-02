@@ -22,6 +22,9 @@ services:
       IA_MODELE_CONVERSATION: ${IA_MODELE_CONVERSATION:-google/gemini-2.5-flash-lite}
       IA_MODELE_RESUME: ${IA_MODELE_RESUME:-google/gemini-2.5-flash-lite}
       IA_MODELE_VISION: ${IA_MODELE_VISION:-google/gemini-2.5-flash}
+      # Liste blanche budget : SEULS ces modeles peuvent etre appeles. Doit
+      # contenir les 3 modeles ci-dessus, sinon le garde-fou refuse l'appel.
+      IA_MODELES_AUTORISES: ${IA_MODELES_AUTORISES:-xiaomi/mimo-v2.5,z-ai/glm-4.7-flash,google/gemini-2.5-flash-lite}
 
       # Odoo PRODUCTION (app., jamais odooee : base fantome).
       ODOO_URL: ${ODOO_URL:-https://app.alphamotors-cameroun.com}
