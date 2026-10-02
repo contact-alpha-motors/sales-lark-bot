@@ -36,6 +36,8 @@ const FICHIER = ARGS.find((a) => !a.startsWith("--")) || path.join(__dirname, ".
 const PROGRES = path.join(path.dirname(process.env.DATABASE_PATH || path.join(__dirname, "..", "data", "assistant.db")), "migration_progress.json");
 const COL_RESULTAT = "code"; // on prend le code COURANT (pas ancien_code)
 const TAG_MIGRATION = process.env.MIGR_TAG || "Import historique"; // etiquette de retropedalage
+const RES_MODEL_LEAD = 804; // ir.model id de crm.lead (pour mail.activity)
+const TYPE_ACT_RDV = Number(process.env.MIGR_TYPE_RDV || 25); // activity_type_id « RDV »
 
 function log(...a) { console.log(...a); }
 
@@ -67,6 +69,7 @@ async function lireLignes(fichier) {
       code: cell(row, COL_RESULTAT),
       commentaire: cell(row, "commentaire"),
       vehicule: cell(row, "vehicule"),
+      date_rdv_pris: cell(row, "date_rdv_pris"),
       source_fiche: cell(row, "source_fiche"),
     });
   }
@@ -74,10 +77,29 @@ async function lireLignes(fichier) {
 }
 
 // Date : cellule Date d'Excel OU texte -> "AAAA-MM-JJ" (ou null).
+// IMPORTANT : l'Excel est en ISO (2026-09-14). detecterDate est faite pour du
+// manuscrit JJ/MM/AA et lirait « 2026-09-14 » comme 26/09/2014 -> on traite
+// l'ISO AVANT de tomber sur detecterDate.
 function dateIso(v) {
   if (!v) return null;
   if (v instanceof Date) return v.toISOString().slice(0, 10);
-  return detecterDate(String(v));
+  const s = String(v).trim();
+  const iso = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (iso) {
+    const y = +iso[1], m = +iso[2], d = +iso[3];
+    if (m >= 1 && m <= 12 && d >= 1 && d <= 31) return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  }
+  return detecterDate(s);
+}
+
+// Commercial deduit du nom de lot quand la colonne "commercial" est vide
+// (ex. source_fiche « astride_14-16 » -> Astride).
+function agentDeSource(src) {
+  const s = String(src || "").toLowerCase();
+  if (/astrid/.test(s)) return "Astride";
+  if (/gloria|ngakeu/.test(s)) return "Gloria";
+  if (/ben/.test(s)) return "Ben";
+  return null;
 }
 
 // Variantes d'un numero pour le matching Odoo (8 chiffres = 6 initial omis).
@@ -190,7 +212,8 @@ async function main() {
     const res = analyserResultat(l.code, l.commentaire || "");
     if (res.statut === "ambigu") { stats.ambigu++; continue; }
     if (res.statut === "routage") { stats.routage++; continue; }
-    eligibles.push({ ligne: l, tel, res, date: di, agentNom: l.commercial && String(l.commercial).trim() !== "?" ? String(l.commercial).trim() : null });
+    const comm = l.commercial && String(l.commercial).trim() && String(l.commercial).trim() !== "?" ? String(l.commercial).trim() : null;
+    eligibles.push({ ligne: l, tel, res, date: di, agentNom: comm || agentDeSource(l.source_fiche) });
   }
   log(`Ignorees : sans date ${stats.sans_date} | sans tel ${stats.sans_tel} | tel invalide ${stats.tel_invalide} | sans code ${stats.sans_code} | ambigu(PP/OUI) ${stats.ambigu} | hors-commercial(DP/DE) ${stats.routage}`);
   log(`Eligibles (datees + exploitables) : ${eligibles.length}`);
@@ -232,7 +255,7 @@ async function main() {
   } catch (e) { log(`! lecture idempotence Odoo: ${e.message} (on continue sur le fichier de reprise seul)`); }
   const pisteParTel = new Map(existants); // tel -> lead_id (complete au fur et a mesure pour les nouveaux)
   const agentCache = new Map();
-  const resultat = { pistes_creees: 0, evenements: 0, echecs: 0, ignores_repris: 0 };
+  const resultat = { pistes_creees: 0, evenements: 0, activites: 0, echecs: 0, ignores_repris: 0 };
   const tagMigrId = await resoudreTag(TAG_MIGRATION);
   log(`Etiquette de retropedalage : « ${TAG_MIGRATION} » (#${tagMigrId}) posee sur chaque piste creee et chaque appel.`);
   let i = 0;
@@ -271,6 +294,22 @@ async function main() {
       evenement.tag_ids = [[6, 0, tagsEvt]];
       await creer("dealership.event.log", evenement);
       resultat.evenements++;
+      // RDV -> activite planifiee LIEE a la piste (res_model/res_id), comme les
+      // vrais RDV qui vivent aussi dans mail.activity. Bonus : son echec ne
+      // bloque pas l'import.
+      if (e.res.sous_type === "meeting_booked" || e.res.sous_type === "video_meeting_booked") {
+        try {
+          await creer("mail.activity", {
+            res_model_id: RES_MODEL_LEAD,
+            res_id: leadId,
+            activity_type_id: TYPE_ACT_RDV,
+            date_deadline: dateIso(e.ligne.date_rdv_pris) || e.date,
+            summary: `RDV - ${(e.ligne.nom && String(e.ligne.nom).trim()) || e.tel}`,
+            ...(userId ? { user_id: userId } : {}),
+          });
+          resultat.activites++;
+        } catch (err2) { /* activite = bonus */ }
+      }
       fait.add(cle);
     } catch (err) {
       resultat.echecs++;
@@ -279,7 +318,7 @@ async function main() {
     if (i % 100 === 0) { sauverProgres(fait); log(`  ... ${i}/${eligibles.length} | pistes creees ${resultat.pistes_creees} | evenements ${resultat.evenements} | echecs ${resultat.echecs}`); }
   }
   sauverProgres(fait);
-  log(`\n=== TERMINE : ${resultat.pistes_creees} pistes creees, ${resultat.evenements} evenements ecrits, ${resultat.echecs} echecs, ${resultat.ignores_repris} deja faits (repris). ===\n`);
+  log(`\n=== TERMINE : ${resultat.pistes_creees} pistes creees, ${resultat.evenements} evenements, ${resultat.activites} activites RDV, ${resultat.echecs} echecs, ${resultat.ignores_repris} deja faits (repris). ===\n`);
 }
 
 main().catch((e) => { console.error("ECHEC:", e); process.exit(1); });
