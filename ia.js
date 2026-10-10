@@ -30,6 +30,16 @@ const MODELES = {
   VISION: process.env.IA_MODELE_VISION || "google/gemini-2.5-flash-lite",
 };
 
+// Modele de REPLI par tache : quand le modele primaire echoue (gratuit sature
+// — plafond 50 req/jour —, timeout, rate-limit, erreur reseau), on bascule
+// AUTOMATIQUEMENT sur ce modele-la pour que le bot ne tombe jamais. Vide = pas
+// de repli (comportement d'origine : on reessaie seulement le primaire).
+const MODELES_REPLI = {
+  CONVERSATION: process.env.IA_MODELE_CONVERSATION_REPLI || "",
+  RESUME: process.env.IA_MODELE_RESUME_REPLI || "",
+  VISION: process.env.IA_MODELE_VISION_REPLI || "",
+};
+
 const TIMEOUTS = {
   CONVERSATION: Number(process.env.IA_TIMEOUT_CONVERSATION || 120000),
   RESUME: Number(process.env.IA_TIMEOUT_RESUME || 120000),
@@ -68,19 +78,37 @@ function attendre(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function appeler(tache, corps) {
-  const modele = MODELES[tache];
+// Plan de modeles a essayer pour une tache, dans l'ordre : le primaire
+// d'abord (TENTATIVES-1 fois), puis le repli une fois. Sans repli : le
+// primaire TENTATIVES fois (comportement d'origine). Tout modele hors de la
+// liste blanche budget est retire du plan AVANT tout appel paye.
+function planModeles(tache) {
+  const primaire = MODELES[tache];
+  const repli = MODELES_REPLI[tache];
+  let plan;
+  if (repli && repli !== primaire) {
+    plan = [...Array(Math.max(1, TENTATIVES - 1)).fill(primaire), repli];
+  } else {
+    plan = Array(TENTATIVES).fill(primaire);
+  }
+  return plan.filter((m) => MODELES_AUTORISES.has(m));
+}
 
-  if (!MODELES_AUTORISES.has(modele)) {
+async function appeler(tache, corps) {
+  const plan = planModeles(tache);
+
+  if (plan.length === 0) {
     throw new Error(
-      `Modele non autorise par le garde-fou budget : ${modele} (tache ${tache}). ` +
+      `Aucun modele autorise par le garde-fou budget pour la tache ${tache} ` +
+      `(primaire ${MODELES[tache]}, repli ${MODELES_REPLI[tache] || "aucun"}). ` +
       `Autorises : ${[...MODELES_AUTORISES].join(", ")}. Ajouter via IA_MODELES_AUTORISES.`
     );
   }
 
   let derniereErreur;
 
-  for (let tentative = 1; tentative <= TENTATIVES; tentative++) {
+  for (let i = 0; i < plan.length; i++) {
+    const modele = plan[i];
     const t0 = Date.now();
     try {
       const reponse = await fetch(`${BASE}/chat/completions`, {
@@ -123,8 +151,12 @@ async function appeler(tache, corps) {
     } catch (erreur) {
       derniereErreur = erreur;
       tracerAppel({ tache, modele, duree_ms: Date.now() - t0, statut: "erreur" });
-      if (tentative < TENTATIVES) {
-        await attendre(2000 * tentative);
+      const suivant = plan[i + 1];
+      if (suivant) {
+        if (suivant !== modele) {
+          console.log(`[ia] ${tache} bascule ${modele} -> ${suivant} (${erreur.message.slice(0, 80)})`);
+        }
+        await attendre(2000 * (i + 1));
       }
     }
   }

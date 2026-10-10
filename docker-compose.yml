@@ -19,12 +19,21 @@ services:
 
       # Modeles via OpenRouter.
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
-      IA_MODELE_CONVERSATION: ${IA_MODELE_CONVERSATION:-google/gemini-2.5-flash-lite}
-      IA_MODELE_RESUME: ${IA_MODELE_RESUME:-google/gemini-2.5-flash-lite}
-      IA_MODELE_VISION: ${IA_MODELE_VISION:-google/gemini-2.5-flash}
+      # Dialogue + outils : modele GRATUIT (0 $, 8/8 outils au banc d'essai).
+      IA_MODELE_CONVERSATION: ${IA_MODELE_CONVERSATION:-dots-studio/dots-3-note-preview:free}
+      IA_MODELE_RESUME: ${IA_MODELE_RESUME:-dots-studio/dots-3-note-preview:free}
+      # Vision/OCR : le gratuit lit MAL le manuscrit (numeros tronques, sens
+      # inverse) ; on garde un payant correct pour ne pas polluer le CRM.
+      IA_MODELE_VISION: ${IA_MODELE_VISION:-google/gemini-2.5-flash-lite}
+      # Repli AUTOMATIQUE quand le primaire echoue (gratuit sature 50/jour,
+      # timeout, rate-limit). xiaomi/mimo-v2.5 : le payant le moins cher qui
+      # choisit bien ses outils (~0.00016 $/requete, 8/8 outils).
+      IA_MODELE_CONVERSATION_REPLI: ${IA_MODELE_CONVERSATION_REPLI:-xiaomi/mimo-v2.5}
+      IA_MODELE_RESUME_REPLI: ${IA_MODELE_RESUME_REPLI:-xiaomi/mimo-v2.5}
       # Liste blanche budget : SEULS ces modeles peuvent etre appeles. Doit
-      # contenir les 3 modeles ci-dessus, sinon le garde-fou refuse l'appel.
-      IA_MODELES_AUTORISES: ${IA_MODELES_AUTORISES:-xiaomi/mimo-v2.5,z-ai/glm-4.7-flash,google/gemini-2.5-flash-lite}
+      # contenir TOUS les modeles ci-dessus (primaires + replis), sinon le
+      # garde-fou retire le modele du plan.
+      IA_MODELES_AUTORISES: ${IA_MODELES_AUTORISES:-dots-studio/dots-3-note-preview:free,xiaomi/mimo-v2.5,google/gemini-2.5-flash-lite}
 
       # Odoo PRODUCTION (app., jamais odooee : base fantome).
       ODOO_URL: ${ODOO_URL:-https://app.alphamotors-cameroun.com}
