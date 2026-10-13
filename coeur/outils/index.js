@@ -534,9 +534,11 @@ const OUTILS = {
       function: {
         name: "receptions",
         description:
-          "Liste les clients RECUS AU SHOWROOM sur une plage (fiche de reception de l'hotesse : nom, telephone, motif, resultat, recu par). " +
-          "Pour « les clients recus », « qui est passe au showroom depuis lundi ». Convertis les dates en AAAA-MM-JJ. " +
-          "Note : les vieilles fiches sans date de reception n'apparaissent pas dans une plage datee.",
+          "VISITES SHOWROOM sur une plage, a partir des fiches de reception de l'hotesse (nom, telephone, motif, resultat, recu par). " +
+          "UTILISE CET OUTIL — et PAS interroger_crm — pour toute question de NOMBRE ou de LISTE de visites/visiteurs/clients recus/passages au showroom : " +
+          "« combien de visites hier », « combien de clients recus cette semaine », « qui est passe au showroom depuis lundi ». " +
+          "Le compte est DEJA dedoublonne par personne et EXCLUT les fiches vides (sans nom ni telephone) : reponds avec le champ `n` tel quel, ne recompte pas la liste toi-meme. " +
+          "Convertis les dates en AAAA-MM-JJ. Note : les vieilles fiches sans date de reception n'apparaissent pas dans une plage datee.",
         parameters: {
           type: "object",
           properties: {
@@ -548,8 +550,12 @@ const OUTILS = {
     },
     async executer(p) {
       const r = await rapports.receptions(p);
-      if (!r.lignes.length) return { texte: `${noteCache(r)}Aucune reception enregistree (avec date) du ${r.debut} au ${r.fin}.` };
-      return { texte: `${noteCache(r)}${r.lignes.length} reception(s) du ${r.debut} au ${r.fin} :\n${JSON.stringify(r.lignes)}` };
+      if (!r.n) return { texte: `${noteCache(r)}Aucune visite showroom du ${r.debut} au ${r.fin}.` };
+      const retires = [];
+      if (r.doublons) retires.push(`${r.doublons} doublon(s) fusionne(s)`);
+      if (r.exclus) retires.push(`${r.exclus} fiche(s) vide(s) ignoree(s)`);
+      const note = retires.length ? ` (${retires.join(", ")} ; ${r.brut} fiches brutes)` : "";
+      return { texte: `${noteCache(r)}${r.n} visite(s) showroom du ${r.debut} au ${r.fin}${note} :\n${JSON.stringify(r.lignes)}` };
     },
   },
 };

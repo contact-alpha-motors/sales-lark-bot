@@ -297,14 +297,50 @@ async function rdvObtenus({ debut, fin, agent, mode = "liste", limite = 60 } = {
 }
 
 // --- Receptions showroom (fiche hotesse, riche : telephone + details) -------
+
+// Une fiche "coquille vide" n'a ni vrai nom ni telephone : ce sont des
+// brouillons generes automatiquement (ex. "Nouveau Prospect - Reception -
+// False"), pas de vraies visites. On ne les compte pas.
+function nomRceptionVide(x_name) {
+  const s = String(x_name || "").trim();
+  if (!s) return true;
+  return /^false$/i.test(s) || /^nouveau prospect/i.test(s) || /r[ée]ception.*false/i.test(s);
+}
+// Cle telephone = 8 derniers chiffres (identifie un mobile camerounais).
+function telCle(t) { const n = String(t || "").replace(/\D/g, ""); return n ? n.slice(-8) : ""; }
+
 async function receptions({ debut, fin, limite = 30 } = {}) {
   const { min, max, d, f } = bornes(debut, fin);
   // Le champ "date de reception" est vide sur beaucoup de fiches : filtrer
   // dessus en perdrait la majorite. On borne donc sur create_date (date de
   // saisie de la fiche, toujours presente) — bon proxy du jour de reception.
   const domaine = [["create_date", ">=", min], ["create_date", "<=", max]];
-  const r = await interroger({ modele: "x_reception", domaine, tri: "create_date desc", limite });
-  return { debut: d, fin: f, lignes: r.lignes, ...fraicheur(r) };
+  // On tire large (max) pour pouvoir dedoublonner correctement avant de couper.
+  const r = await interroger({ modele: "x_reception", domaine, tri: "create_date desc", limite: 50 });
+
+  const brut = r.lignes.length;
+  // 1) exclure les coquilles vides : ni nom reel NI telephone.
+  const valides = r.lignes.filter((l) => !(nomRceptionVide(l.x_name) && !telCle(l.x_studio_tlphone)));
+  // 2) dedoublonner par PERSONNE : meme prospect (ou meme tel, ou meme nom)
+  //    recu plusieurs fois = 1 seule visite. On garde la fiche la plus recente.
+  const vus = new Set();
+  const lignes = [];
+  for (const l of valides) {
+    const cle = (Array.isArray(l.x_prospect) && l.x_prospect[0]) ? `p${l.x_prospect[0]}`
+      : telCle(l.x_studio_tlphone) ? `t${telCle(l.x_studio_tlphone)}`
+      : `n${String(l.x_name || "").trim().toLowerCase()}`;
+    if (vus.has(cle)) continue;
+    vus.add(cle);
+    lignes.push(l);
+  }
+  const exclus = brut - valides.length;        // coquilles vides retirees
+  const doublons = valides.length - lignes.length; // memes personnes fusionnees
+  return {
+    debut: d, fin: f,
+    n: lignes.length, brut, exclus, doublons,
+    lignes: lignes.slice(0, Math.min(Math.max(1, limite || 30), 200)),
+    ...fraicheur(r),
+  };
 }
 
 module.exports = { statsJour, interactions, rdv, rdvObtenus, rdvProgrammes, receptions };
