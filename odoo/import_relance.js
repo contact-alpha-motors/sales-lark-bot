@@ -141,7 +141,12 @@ async function extraireFicheReception(chemin) {
   if (ext === ".pdf" && (await popplerDispo())) {
     const { images, dossier } = await pdfEnImages(chemin);
     try {
-      const pages = await Promise.all(images.map((img) => extraireFichierJson(INSTRUCTION_PAGE, img).catch(() => null)));
+      // Lecture SEQUENTIELLE (pas Promise.all) : evite que les pages se
+      // starvent sur un modele vision lent et depassent le timeout.
+      const pages = [];
+      for (const img of images) {
+        pages.push(await extraireFichierJson(INSTRUCTION_PAGE, img).catch(() => null));
+      }
       resultat = fusionner(pages);
       const corpus = path.join(process.env.OCR_IMAGES_DIR || path.join(__dirname, "..", "data", "ocr_images"), hash);
       archiverImages(corpus, images);

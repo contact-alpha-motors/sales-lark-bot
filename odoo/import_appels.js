@@ -122,9 +122,14 @@ async function extraireFeuilleAppel(chemin) {
   if (ext === ".pdf" && (await popplerDispo())) {
     const { images, dossier } = await pdfEnImages(chemin);
     try {
-      const pages = await Promise.all(
-        images.map((img) => extraireFichierJson(INSTRUCTION_PAGE, img).catch(() => null))
-      );
+      // Lecture SEQUENTIELLE (pas Promise.all) : les modeles vision lents
+      // (ex. qwen) se starvent mutuellement en parallele et depassent le
+      // timeout. Une page a la fois -> chacune a toute la bande passante et
+      // finit dans les temps (lecture 100% du modele choisi, reproductible).
+      const pages = [];
+      for (const img of images) {
+        pages.push(await extraireFichierJson(INSTRUCTION_PAGE, img).catch(() => null));
+      }
       resultat = fusionnerPages(pages);
       archiverImages(corpusDir, images);
     } finally {
