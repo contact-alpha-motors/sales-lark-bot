@@ -176,14 +176,25 @@ async function resoudreTag(nom) {
 const resoudreAgent = resoudreUtilisateur;
 
 function parserDateRdv(texte, anneeDefaut) {
-  const m = String(texte || "").match(/(\d{1,2})[\/-](\d{1,2})(?:[\/-](\d{2,4}))?/);
-  if (!m) return null;
-  const jour = Number(m[1]);
-  const mois = Number(m[2]);
-  if (mois < 1 || mois > 12 || jour < 1 || jour > 31) return null;
-  let annee = anneeDefaut;
-  if (m[3]) annee = m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3]);
-  return `${annee}-${String(mois).padStart(2, "0")}-${String(jour).padStart(2, "0")}`;
+  const essai = (s) => {
+    const m = String(s || "").match(/(\d{1,2})[\/-](\d{1,2})(?:[\/-](\d{2,4}))?/);
+    if (!m) return null;
+    const jour = Number(m[1]);
+    const mois = Number(m[2]);
+    if (mois < 1 || mois > 12 || jour < 1 || jour > 31) return null;
+    let annee = anneeDefaut;
+    if (m[3]) annee = m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3]);
+    return `${annee}-${String(mois).padStart(2, "0")}-${String(jour).padStart(2, "0")}`;
+  };
+  let r = essai(texte);
+  // Fourchette de jours ("19-20/10/26", "19/20/10/26", "19 au 20/10") illisible
+  // telle quelle -> on prend le jour le PLUS PROCHE (le premier). Fallback
+  // seulement si l'analyse directe echoue : les dates normales ne sont pas touchees.
+  if (!r) {
+    const norm = String(texte || "").replace(/(\d{1,2})\s*(?:-|\/|a|au)\s*\d{1,2}([\/-]\s*\d{1,2})/i, "$1$2");
+    r = essai(norm);
+  }
+  return r;
 }
 
 // Construit le plan sans rien ecrire : pour chaque ligne, decide creer/retrouver
