@@ -59,6 +59,34 @@ const CONCURRENTS = [
   ["CAMI", "CAMI Toyota"], ["TOYOTA", "CAMI Toyota"], ["CFAO", "CFAO"],
 ];
 
+// Detecte un CONCURRENT dans un commentaire, de maniere ROBUSTE a l'OCR : le
+// nom manuscrit de la marque est souvent mal lu (ex "Sky Motors" lu "shymono"),
+// donc on ne se fie pas qu'aux noms connus.
+//   1) nom connu cite         -> nom propre normalise (Sky Motors, CFAO...)
+//   2) "chez X"               -> on capte X tel quel (shymono, Sky Motors...)
+//   3) perte "...ailleurs"    -> "(a preciser)" (concurrent sur, nom illisible)
+// Renvoie null si aucun signe de concurrent.
+function detecterConcurrent(commentaire) {
+  const t = String(commentaire || "");
+  const T = t.toUpperCase();
+  // 1) Concurrent connu cite (matche meme au sein d'un mot mal lu).
+  const connu = CONCURRENTS.find(([k]) => T.includes(k));
+  if (connu) return connu[1];
+  // 2) Il faut un SIGNAL DE PERTE pour eviter les faux positifs ("chez lui",
+  //    "chez moi", "rappeler chez lui demain").
+  const perte = /(SATISFACTION|ACHET[EÉ]|ACHAT|TROUV[EÉ]|PRIS|COMMAND[EÉ]|CONCURRENT|AILLEURS)/.test(T);
+  if (!perte) return null;
+  // 3) "chez X" -> on capte UN mot (la marche, ex "shymono"), sans happer la
+  //    suite ("... demain"). Les pronoms/articles ne sont pas des concurrents.
+  const chez = t.match(/\bchez\s+([\p{L}0-9][\p{L}0-9'’.\-]{1,24})/iu);
+  if (chez) {
+    const nom = chez[1].replace(/[)\].,;:].*$/su, "").trim();
+    if (nom && !/^(lui|elle|eux|nous|moi|toi|vous|un|une|le|la|les|son|sa|ses|mon|ma)$/i.test(nom)) return nom;
+  }
+  // 4) Perte claire mais marque illisible -> a preciser par un humain.
+  return "(à préciser)";
+}
+
 function analyserCommentaireRelance(commentaire) {
   const t = (commentaire || "").toUpperCase();
   if (!t.replace(/[^A-Z0-9]/g, "")) return { statut: "vide" }; // aucun texte -> pas d'appel
@@ -75,10 +103,10 @@ function analyserCommentaireRelance(commentaire) {
   // concurrent -> on ressort le concurrent exact via une etiquette dediee.
   const veutAcheter = /(VEUT|VA|SOUHAIT|COMPTE|AIMERAIT|DESIRE|PROJET|POUR)\s*D?['’]?\s*ACHET/.test(t);
   if (!veutAcheter && /(A\s*ACHET|DEJA\s*ACHET|ACHET[EÉ]|ACHAT|A\s*PRIS\s*(SA|UN|UNE|LE))/.test(t)) {
-    const conc = CONCURRENTS.find(([k]) => t.includes(k));
+    const conc = detecterConcurrent(commentaire);
     const tags = ["Déjà acheté"];
     let note = "Déjà acheté";
-    if (conc) { tags.push("Concurrent", conc[1]); note = `Acheté chez ${conc[1]} (concurrent)`; }
+    if (conc) { tags.push("Concurrent", conc); note = `Acheté chez ${conc} (concurrent)`; }
     return { statut: "ok", event_type: "call", sous_type: "client", note, tags, whatsapp };
   }
 
@@ -210,18 +238,29 @@ async function construirePlanRelance(extraction, indice = "") {
         if (!res.note && c.note) res.note = c.note;
         if (c.tag) res.tags = [...(res.tags || []), c.tag];
       }
-      // Concurrent cite meme SANS "achete" (ex "satisfaction ailleurs chez Sky
-      // Motors") : on ressort l'etiquette concurrent a partir du nom.
-      const up = (ligne.commentaire || "").toUpperCase();
-      const conc = CONCURRENTS.find(([k]) => up.includes(k));
-      if (conc && !(res.tags || []).includes(conc[1])) {
-        res.tags = [...(res.tags || []), "Concurrent", conc[1]];
-        if (!res.note) res.note = `Concurrent ${conc[1]}`;
-      }
       // Numero marque incorrect/faux sur la feuille -> faux numero.
       if (/INCORRECT|FAUX\s*NUM|N[' ]?EXISTE/.test((ligne.resultat || "").toUpperCase())) {
         res.statut = "ok"; res.event_type = "call"; res.sous_type = "bad_number"; res.non_categorise = false;
       }
+    }
+
+    // --- CONCURRENT : detection robuste, appliquee a TOUTE ligne ---
+    // On ne rate plus une perte concurrent meme si le modele a mal lu la marque
+    // (nom connu, "chez X" capte tel quel, ou perte "ailleurs" -> a preciser).
+    const conc = detecterConcurrent(ligne.commentaire);
+    if (conc) {
+      const tg = new Set(res.tags || []);
+      tg.add("Concurrent");
+      tg.add(conc);
+      // Achat AVERE chez un concurrent -> Deja achete (sauf si un RDV a ete pris).
+      if (/A\s*ACHET|ACHET[EÉ]\s*(AILLEURS|CHEZ)|DEJA\s*ACHET/.test((ligne.commentaire || "").toUpperCase())
+          && res.sous_type !== "meeting_booked" && res.sous_type !== "video_meeting_booked") {
+        tg.add("Déjà acheté");
+        res.sous_type = "client";
+      }
+      res.tags = [...tg];
+      if (!res.note || res.note === "A categoriser") res.note = `Concurrent ${conc}`;
+      res.non_categorise = false;
     }
     // Date de RDV portee par sa propre colonne sur les feuilles imprimees.
     if (!res.rdv_date && ligne.date_rdv) {
