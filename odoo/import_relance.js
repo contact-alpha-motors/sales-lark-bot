@@ -3,7 +3,7 @@ const fs = require("fs");
 const crypto = require("crypto");
 const { rechercherLire } = require("./rpc");
 const { chercherParTelephone, resoudreUtilisateur } = require("./requetes");
-const { normaliserTelephone, telephoneValide, detecterDate } = require("../coeur/referentiel");
+const { normaliserTelephone, telephoneValide, detecterDate, analyserResultat } = require("../coeur/referentiel");
 const { extraireFichierJson } = require("../ia");
 const { enregistrerOcr, lireOcr } = require("../memoire/base");
 const { disponible: popplerDispo, pdfEnImages, nettoyer } = require("../documents/pdf_en_images");
@@ -189,6 +189,39 @@ async function construirePlanRelance(extraction, indice = "") {
   for (const ligne of extraction.lignes || []) {
     const tel = normaliserTelephone(ligne.telephone);
     const res = analyserCommentaireRelance(ligne.commentaire);
+
+    // Feuille de relance IMPRIMEE (NR/NRP) : le resultat du jour est un CODE
+    // manuscrit dans sa propre colonne (PI, NR, NRP, RDV, PL...). On le classe
+    // avec le lecteur de codes (fiable), tout en gardant les etiquettes
+    // deduites du commentaire (concurrent, deja achete, hors ville...).
+    if (ligne.resultat && String(ligne.resultat).trim()) {
+      const c = analyserResultat(ligne.resultat, ligne.commentaire);
+      if (c.statut === "ok") {
+        res.statut = "ok";
+        res.event_type = c.event_type;
+        res.sous_type = c.sous_type;
+        res.non_categorise = false;
+        if (!res.note && c.note) res.note = c.note;
+        if (c.tag) res.tags = [...(res.tags || []), c.tag];
+      }
+      // Concurrent cite meme SANS "achete" (ex "satisfaction ailleurs chez Sky
+      // Motors") : on ressort l'etiquette concurrent a partir du nom.
+      const up = (ligne.commentaire || "").toUpperCase();
+      const conc = CONCURRENTS.find(([k]) => up.includes(k));
+      if (conc && !(res.tags || []).includes(conc[1])) {
+        res.tags = [...(res.tags || []), "Concurrent", conc[1]];
+        if (!res.note) res.note = `Concurrent ${conc[1]}`;
+      }
+      // Numero marque incorrect/faux sur la feuille -> faux numero.
+      if (/INCORRECT|FAUX\s*NUM|N[' ]?EXISTE/.test((ligne.resultat || "").toUpperCase())) {
+        res.statut = "ok"; res.event_type = "call"; res.sous_type = "bad_number"; res.non_categorise = false;
+      }
+    }
+    // Date de RDV portee par sa propre colonne sur les feuilles imprimees.
+    if (!res.rdv_date && ligne.date_rdv) {
+      const dr = detecterDate(ligne.date_rdv);
+      if (dr) res.rdv_date = dr;
+    }
 
     if (res.statut === "vide") {
       plan.vides.push({ nom: ligne.nom, telephone: tel });

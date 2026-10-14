@@ -103,6 +103,34 @@ async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichie
         return repondre(chatId, "Tu n'as pas le droit d'importer des appels dans Odoo. Contacte un responsable.");
       }
 
+      // Routage sur le CONTENU (pas le nom de fichier) : une FEUILLE DE RELANCE
+      // imprimee (pistes Odoo NR/NRP) part en import_relance, qui rapproche les
+      // pistes existantes et pose les tags (concurrent, faux numero...). On
+      // reutilise la MEME extraction (aucun 2e appel vision) en mappant les champs.
+      if (extraction.est_feuille_relance_imprimee) {
+        console.log(`[agent ${chatId.slice(-6)}] feuille de relance imprimee detectee : ${extraction.lignes.length} lignes`);
+        const exRelance = {
+          agent: extraction.agent, hash: extraction.hash,
+          lignes: extraction.lignes.map((l) => ({
+            nom: l.nom || "",
+            telephone: l.telephone,
+            commentaire: l.commentaire || "",
+            resultat: l.code_resultat || "",          // code RESULTAT manuscrit du jour
+            date_rdv: l.rdv_texte || "",
+            date_session_brut: extraction.date_appels_brut || "",
+          })),
+        };
+        let planR;
+        try {
+          planR = await construirePlanRelance(exRelance, indice);
+        } catch (e) {
+          if (estErreurOdoo(e)) return repondre(chatId, `J'ai lu la feuille de relance (${extraction.lignes.length} lignes) et je l'ai gardee, mais Odoo est injoignable. Renvoie-la quand il sera revenu (gratuit, deja lue).`);
+          throw e;
+        }
+        poserActionEnAttente(chatId, "import_relance", planR, "Import feuille de relance");
+        return repondre(chatId, resumePlanRelance(planR));
+      }
+
       console.log(`[agent ${chatId.slice(-6)}] fiche d'appel detectee : ${extraction.lignes.length} lignes`);
       let plan;
       try {

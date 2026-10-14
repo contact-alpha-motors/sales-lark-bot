@@ -54,8 +54,10 @@ const TYPE_ACTIVITE_RDV = Number(process.env.ODOO_ACTIVITY_MEETING_ID || 3); // 
 const INSTRUCTION_PAGE = `Ceci est UNE page d'une FICHE D'APPEL manuscrite d'Alpha Motors (concession auto).
 L'EN-TETE de page donne l'agent qui a passe les appels et la date. Chaque LIGNE du tableau = un appel a un prospect.
 C'est une liste de RE-LANCE : chaque ligne est un prospect deja contacte avant. La colonne "personne ayant appele" est l'agent qui a appele LA FOIS PRECEDENTE (historique), avec la date et le resultat de ce contact precedent. Le resultat de l'appel ACTUEL est le code manuscrit du jour.
+IMPORTANT - distingue le TYPE de document. Une vraie FICHE D'APPEL est MANUSCRITE (en-tete ecrit a la main, ex "Astride -> 13/10/26"). A l'oppose, une FEUILLE DE RELANCE est un TABLEAU IMPRIME par ordinateur : titre imprime "Feuille de relance" / "RELANCE" / "Numeros Ne repond pas (NR/NRP)" / "pistes Odoo", une reference type "AM-CS-...-RELANCE-...", et une colonne imprimee "HISTORIQUE" (ex "1x NRP"). Mets "est_feuille_relance_imprimee" a true UNIQUEMENT dans ce second cas (tableau imprime de relance) ; sinon false.
 Renvoie UNIQUEMENT du JSON, cette forme exacte :
 {
+  "est_feuille_relance_imprimee": <true si tableau IMPRIME "Feuille de relance"/"RELANCE"/"pistes Odoo", sinon false>,
   "agent": "<nom en en-tete de page, ou ''>",
   "date_appels_brut": "<texte brut de la date en en-tete, ex '22/09/26', ou ''>",
   "lignes": [
@@ -78,6 +80,7 @@ function fusionnerPages(pages) {
   const ok = pages.filter(Boolean);
   const entete = ok.find((p) => p.agent) || {};
   return {
+    est_feuille_relance_imprimee: ok.some((p) => p.est_feuille_relance_imprimee),
     agent: entete.agent || "",
     date_appels_brut: entete.date_appels_brut || "",
     lignes: ok.flatMap((p) => p.lignes || []),
