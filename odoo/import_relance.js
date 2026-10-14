@@ -123,13 +123,14 @@ async function extraireFicheReception(chemin) {
   const octets = fs.readFileSync(chemin);
   const hash = crypto.createHash("sha256").update(octets).digest("hex");
   const cache = lireOcr(hash);
+  const visionActuel = process.env.IA_MODELE_VISION || "google/gemini-2.5-flash-lite";
   if (cache) {
     try {
       const r = JSON.parse(cache.extraction);
-      // On n'utilise le cache que s'il porte le schema courant (agent par ligne) ;
-      // sinon on re-extrait une fois pour recuperer les agents par ligne.
-      if (r && r.type_fiche === "reception" && r.lignes && r.lignes[0] && "agent_ligne" in r.lignes[0]) {
-        console.log(`[ocr] cache hit ${hash.slice(0, 8)} (reception)`);
+      // On n'utilise le cache que s'il porte le schema courant (agent par ligne)
+      // ET s'il a ete produit par le modele vision actuel ; sinon on re-extrait.
+      if (r && r.type_fiche === "reception" && r.lignes && r.lignes[0] && "agent_ligne" in r.lignes[0] && cache.modele === visionActuel) {
+        console.log(`[ocr] cache hit ${hash.slice(0, 8)} (reception, modele ${cache.modele})`);
         return r;
       }
     } catch { /* relire */ }

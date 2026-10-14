@@ -96,14 +96,17 @@ async function extraireFeuilleAppel(chemin) {
   const octets = fs.readFileSync(chemin);
   const hash = crypto.createHash("sha256").update(octets).digest("hex");
   const cache = lireOcr(hash);
+  const visionActuel = process.env.IA_MODELE_VISION || "google/gemini-2.5-flash-lite";
   if (cache) {
     try {
       const r = JSON.parse(cache.extraction);
-      // On n'utilise le cache que s'il porte le schema courant (drapeau de type
-      // de document) ; sinon on relit UNE fois pour obtenir ce drapeau, sans
-      // quoi une feuille de relance deja cachee serait encore mal routee.
-      if (r && "est_feuille_relance_imprimee" in r) {
-        console.log(`[ocr] cache hit ${hash.slice(0, 8)} (${cache.nb_lignes} lignes, 0 cout)`);
+      // On ne reutilise le cache que s'il porte le schema courant (drapeau de
+      // type de document) ET s'il a ete produit par le MODELE VISION ACTUEL :
+      // si on change de modele vision, on veut re-lire avec le nouveau, pas
+      // resservir l'ancienne lecture (sinon le changement de modele n'a aucun
+      // effet sur les fiches deja vues).
+      if (r && "est_feuille_relance_imprimee" in r && cache.modele === visionActuel) {
+        console.log(`[ocr] cache hit ${hash.slice(0, 8)} (${cache.nb_lignes} lignes, modele ${cache.modele}, 0 cout)`);
         r.hash = hash;
         return r;
       }

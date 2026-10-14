@@ -27,8 +27,10 @@ services:
       IA_MODELE_RESUME: ${IA_MODELE_RESUME:-z-ai/glm-4.7-flash}
       # Vision/OCR : qwen3.5-9b a gagne le banc d'essai (30/30 lignes, 5/5 RDV,
       # alignement correct, SEUL a detecter le concurrent) a 0,15 $/1M output.
-      # Plus lent (~50 s/page) mais l'import de fiches est ponctuel, pas urgent.
+      # Lent en prod (il depassait 90 s/page) -> timeout vision elargi a 120 s
+      # pour qu'il finisse en 1 tentative ; repli flash-lite s'il cale quand meme.
       IA_MODELE_VISION: ${IA_MODELE_VISION:-qwen/qwen3.5-9b}
+      IA_TIMEOUT_VISION: ${IA_TIMEOUT_VISION:-120000}
       # Repli AUTOMATIQUE quand le primaire echoue (gratuit sature 50/jour,
       # timeout, rate-limit). xiaomi/mimo-v2.5 : le payant le moins cher qui
       # choisit bien ses outils (~0.00016 $/requete, 8/8 outils). La vision
