@@ -219,7 +219,13 @@ async function construirePlanRelance(extraction, indice = "") {
     }
     // Date de RDV portee par sa propre colonne sur les feuilles imprimees.
     if (!res.rdv_date && ligne.date_rdv) {
-      const dr = detecterDate(ligne.date_rdv);
+      let dr = detecterDate(ligne.date_rdv);
+      // Fourchette de jours ("19-20/10/26", "19/20/10/26", "19 au 20/10") : non
+      // lisible telle quelle -> on prend le jour le PLUS PROCHE (le premier).
+      if (!dr) {
+        const norm = String(ligne.date_rdv).replace(/(\d{1,2})\s*(?:-|\/|a|au)\s*\d{1,2}([\/-]\s*\d{1,2})/i, "$1$2");
+        dr = detecterDate(norm);
+      }
       if (dr) res.rdv_date = dr;
     }
 
