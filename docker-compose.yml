@@ -19,9 +19,12 @@ services:
 
       # Modeles via OpenRouter.
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
-      # Dialogue + outils : modele GRATUIT (0 $, 8/8 outils au banc d'essai).
-      IA_MODELE_CONVERSATION: ${IA_MODELE_CONVERSATION:-dots-studio/dots-3-note-preview:free}
-      IA_MODELE_RESUME: ${IA_MODELE_RESUME:-dots-studio/dots-3-note-preview:free}
+      # Dialogue + outils : z-ai/glm-4.7-flash (banc d'essai : 8/9 bons outils,
+      # ultra-rapide 0,4 s, pas cher). Le seul raté est un chercher_lead au lieu
+      # de creer_lead = lecture sure + auto-corrigee dans la boucle + ecritures
+      # verrouillees par confirmation. Repli gemini-2.5-flash (9/9) si glm cale.
+      IA_MODELE_CONVERSATION: ${IA_MODELE_CONVERSATION:-z-ai/glm-4.7-flash}
+      IA_MODELE_RESUME: ${IA_MODELE_RESUME:-z-ai/glm-4.7-flash}
       # Vision/OCR : qwen3.5-9b a gagne le banc d'essai (30/30 lignes, 5/5 RDV,
       # alignement correct, SEUL a detecter le concurrent) a 0,15 $/1M output.
       # Plus lent (~50 s/page) mais l'import de fiches est ponctuel, pas urgent.
@@ -30,13 +33,13 @@ services:
       # timeout, rate-limit). xiaomi/mimo-v2.5 : le payant le moins cher qui
       # choisit bien ses outils (~0.00016 $/requete, 8/8 outils). La vision
       # retombe sur flash-lite (rapide) si qwen cale/time-out.
-      IA_MODELE_CONVERSATION_REPLI: ${IA_MODELE_CONVERSATION_REPLI:-xiaomi/mimo-v2.5}
+      IA_MODELE_CONVERSATION_REPLI: ${IA_MODELE_CONVERSATION_REPLI:-google/gemini-2.5-flash}
       IA_MODELE_RESUME_REPLI: ${IA_MODELE_RESUME_REPLI:-xiaomi/mimo-v2.5}
       IA_MODELE_VISION_REPLI: ${IA_MODELE_VISION_REPLI:-google/gemini-2.5-flash-lite}
       # Liste blanche budget : SEULS ces modeles peuvent etre appeles. Doit
       # contenir TOUS les modeles ci-dessus (primaires + replis), sinon le
       # garde-fou retire le modele du plan.
-      IA_MODELES_AUTORISES: ${IA_MODELES_AUTORISES:-dots-studio/dots-3-note-preview:free,xiaomi/mimo-v2.5,qwen/qwen3.5-9b,google/gemini-2.5-flash-lite}
+      IA_MODELES_AUTORISES: ${IA_MODELES_AUTORISES:-z-ai/glm-4.7-flash,xiaomi/mimo-v2.5,qwen/qwen3.5-9b,google/gemini-2.5-flash-lite,google/gemini-2.5-flash,dots-studio/dots-3-note-preview:free}
 
       # Odoo PRODUCTION (app., jamais odooee : base fantome).
       ODOO_URL: ${ODOO_URL:-https://app.alphamotors-cameroun.com}
