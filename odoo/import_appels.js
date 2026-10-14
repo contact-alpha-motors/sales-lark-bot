@@ -97,8 +97,17 @@ async function extraireFeuilleAppel(chemin) {
   const hash = crypto.createHash("sha256").update(octets).digest("hex");
   const cache = lireOcr(hash);
   if (cache) {
-    console.log(`[ocr] cache hit ${hash.slice(0, 8)} (${cache.nb_lignes} lignes, 0 cout)`);
-    try { const r = JSON.parse(cache.extraction); r.hash = hash; return r; } catch { /* cache corrompu -> relire */ }
+    try {
+      const r = JSON.parse(cache.extraction);
+      // On n'utilise le cache que s'il porte le schema courant (drapeau de type
+      // de document) ; sinon on relit UNE fois pour obtenir ce drapeau, sans
+      // quoi une feuille de relance deja cachee serait encore mal routee.
+      if (r && "est_feuille_relance_imprimee" in r) {
+        console.log(`[ocr] cache hit ${hash.slice(0, 8)} (${cache.nb_lignes} lignes, 0 cout)`);
+        r.hash = hash;
+        return r;
+      }
+    } catch { /* cache corrompu -> relire */ }
   }
 
   // Dossier persistant du corpus : on garde les images (pages) a cote du JSON,
