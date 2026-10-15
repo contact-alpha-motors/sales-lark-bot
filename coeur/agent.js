@@ -4,7 +4,7 @@ const { construireContexte } = require("./contexte");
 const { OUTILS, schemas } = require("./outils");
 const { peutExecuter } = require("./droits");
 const { extraireFeuilleAppel, construirePlan, resumePlan, completerEntete, stagerPlan } = require("../odoo/import_appels");
-const { extraireFicheReception, construirePlanRelance, resumePlanRelance } = require("../odoo/import_relance");
+const { extraireFicheReception, construirePlanRelance, resumePlanRelance, contientCorrections, appliquerCorrections } = require("../odoo/import_relance");
 const {
   enregistrerMessage,
   poserActionEnAttente,
@@ -111,13 +111,15 @@ async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichie
         console.log(`[agent ${chatId.slice(-6)}] feuille de relance imprimee detectee : ${extraction.lignes.length} lignes`);
         const exRelance = {
           agent: extraction.agent, hash: extraction.hash,
-          lignes: extraction.lignes.map((l) => ({
+          lignes: extraction.lignes.map((l, i) => ({
             nom: l.nom || "",
             telephone: l.telephone,
             commentaire: l.commentaire || "",
             resultat: l.code_resultat || "",          // code RESULTAT manuscrit du jour
             date_rdv: l.rdv_texte || "",
             date_session_brut: extraction.date_appels_brut || "",
+            _page: l._page || null,
+            _rang: l._rang || i + 1,
           })),
         };
         let planR;
@@ -174,6 +176,36 @@ async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichie
       await completerEntete(plan, texte);
       poserActionEnAttente(chatId, "import_appels", plan, "Import fiche d'appel");
       return repondre(chatId, resumePlan(plan));
+    }
+  }
+
+  // Corrections des lignes « a revoir » d'un import de relance en attente :
+  // l'utilisateur donne les vraies valeurs (« #1 NR #2 RDV »). On tranche ces
+  // lignes, on re-presente le recap mis a jour, et si un « oui » accompagne et
+  // qu'il ne reste plus rien a revoir, on enregistre directement.
+  if (texte && !estAnnulation(texte)) {
+    const attente = lireActionEnAttente(chatId);
+    if (attente && attente.outil === "import_relance" && !attenteExpiree(attente) && contientCorrections(texte)) {
+      const plan = attente.parametres;
+      const cr = appliquerCorrections(plan, texte);
+      poserActionEnAttente(chatId, "import_relance", plan, attente.description || "Import fiche de relance");
+
+      const bilan = [];
+      if (cr.appliquees.length) bilan.push(`✅ ${cr.appliquees.length} ligne(s) corrigee(s) : ` + cr.appliquees.map((x) => `#${x.ref}→${x.categorie}`).join(", "));
+      if (cr.inconnues.length) bilan.push(`⚠️ non compris : ` + cr.inconnues.map((x) => `#${x.ref}${x.saisie ? ` « ${x.saisie} »` : ""} (${x.raison})`).join(", "));
+
+      const confirmeAussi = motsDe(texte).some((mot) => MOT_CONFIRME.test(mot));
+      if (confirmeAussi && plan.a_revoir.length === 0) {
+        prendreActionEnAttente(chatId);
+        const r = stagerPlan(plan);
+        journaliser(chatId, senderId, "import_relance", { agent: plan.agent, resume: plan.resume }, r);
+        let msg = `${bilan.join("\n")}\n\nC'est garde en local : ${r.stagees} ligne(s) prete(s) a envoyer. Rien n'est encore dans Odoo.`;
+        if (r.deja) msg += ` ${r.deja} etaient deja gardees (pas de doublon).`;
+        msg += `\n\nQuand tu veux : « synchronise tout » pour tout envoyer, ou « qu'est-ce qui attend ? » pour voir le detail.`;
+        return repondre(chatId, msg);
+      }
+      // Sinon on re-presente le recap a jour (il peut rester des lignes a revoir).
+      return repondre(chatId, `${bilan.join("\n")}\n\n${resumePlanRelance(plan)}`);
     }
   }
 

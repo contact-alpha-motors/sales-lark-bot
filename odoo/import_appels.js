@@ -34,6 +34,7 @@ async function creerActivite(leadId, a, plan) {
 }
 const { chercherParTelephone, resoudreUtilisateur } = require("./requetes");
 const { normaliserTelephone, telephoneValide, analyserResultat, detecterAgent, detecterDate } = require("../coeur/referentiel");
+const { classifierResultats } = require("../coeur/classifieur");
 const { extraireFichierJson } = require("../ia");
 const { disponible: popplerDispo, pdfEnImages, nettoyer } = require("../documents/pdf_en_images");
 
@@ -83,7 +84,9 @@ function fusionnerPages(pages) {
     est_feuille_relance_imprimee: ok.some((p) => p.est_feuille_relance_imprimee),
     agent: entete.agent || "",
     date_appels_brut: entete.date_appels_brut || "",
-    lignes: ok.flatMap((p) => p.lignes || []),
+    // _page (ordre de lecture) + _rang (position DANS la page) : permet de
+    // pointer une ligne precise a l'utilisateur ("page 2, ligne 7").
+    lignes: ok.flatMap((p, idx) => (p.lignes || []).map((l, r) => ({ ...l, _page: idx + 1, _rang: r + 1 }))),
   };
 }
 
@@ -229,16 +232,36 @@ async function construirePlan(extraction, indice = "") {
     invalides: [],
   };
 
+  // --- CLASSEMENT type-safe (jev), en UN appel pour toute la fiche ---
+  // Meme principe que les feuilles de relance : l'OCR a transcrit le code
+  // manuscrit BRUT, jev le range avec une confiance. Confiance < seuil ->
+  // "ambigu" (part en plan.ambigus, NON importe = sur). Repli regle locale si
+  // jev indisponible.
+  const lignesAClasser = (extraction.lignes || []).filter((l) => l.code_resultat && String(l.code_resultat).trim());
+  const verdictParLigne = new Map();
+  if (lignesAClasser.length) {
+    try {
+      const verdicts = await classifierResultats(
+        lignesAClasser.map((l) => ({ resultat_brut: l.code_resultat, commentaire: l.commentaire }))
+      );
+      lignesAClasser.forEach((l, i) => verdictParLigne.set(l, verdicts[i]));
+    } catch (e) {
+      console.error("[classif] jev indisponible, repli regle locale:", e.message);
+    }
+  }
+
   for (const ligne of extraction.lignes || []) {
     const tel = normaliserTelephone(ligne.telephone);
-    const res = analyserResultat(ligne.code_resultat, ligne.commentaire);
+    const res = verdictParLigne.get(ligne) || analyserResultat(ligne.code_resultat, ligne.commentaire);
 
     if (res.statut === "routage") {
       plan.routage.push({ nom: ligne.nom, telephone: tel, motif: res.note, code: res.canon });
       continue;
     }
     if (res.statut === "ambigu") {
-      plan.ambigus.push({ nom: ligne.nom, telephone: tel, code: res.canon, commentaire: ligne.commentaire });
+      // jev peu sur : on PROPOSE son meilleur choix (a confirmer par l'humain).
+      const suggestion = res.propose && res.propose.categorie ? res.propose.categorie : null;
+      plan.ambigus.push({ nom: ligne.nom, telephone: tel, code: res.canon, commentaire: ligne.commentaire, suggestion, confiance: res.confiance ?? null, page: ligne._page || null, rang: ligne._rang || null });
       continue;
     }
     if (!telephoneValide(tel)) {
@@ -490,7 +513,13 @@ function resumePlan(plan) {
     `- ${r.total_lignes} lignes lues`,
     `- ${r.a_ecrire} appels a enregistrer, dont ${r.nouvelles_pistes} nouvelles pistes et ${r.rdv} RDV`,
   ];
-  if (r.ambigus) lignes.push(`- ${r.ambigus} codes ambigus (PP/OUI/inconnu) NON importes`);
+  if (r.ambigus) {
+    lignes.push(`- 🔎 ${r.ambigus} codes AMBIGUS (classement incertain) NON importes — a confirmer :`);
+    for (const a of (plan.ambigus || [])) {
+      const ou = a.page ? `page ${a.page}, ligne ${a.rang}` : `ligne ${a.rang || "?"}`;
+      lignes.push(`   • ${ou} — ${a.nom || a.telephone} : lu « ${a.code || "?"} »${a.suggestion ? ` → suggere « ${a.suggestion} »` : ""}`);
+    }
+  }
   if (r.routage) lignes.push(`- ${r.routage} demandes hors-commercial (DP/DE/SAV) NON importees`);
   if (r.invalides) lignes.push(`- ${r.invalides} numeros invalides ignores`);
 

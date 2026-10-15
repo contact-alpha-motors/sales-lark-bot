@@ -23,12 +23,22 @@ const { enregistrerAppelIa } = require("./memoire/base");
 // ---------------------------------------------------------------------------
 
 const BASE = process.env.IA_BASE_URL || "https://openrouter.ai/api/v1";
+// Racine de l'API (sans le /v1) pour les endpoints hors chat/completions,
+// notamment l'API Decisions type-safe (/api/alpha/decisions).
+const RACINE_API = BASE.replace(/\/v1\/?$/, "");
 
 const MODELES = {
   CONVERSATION: process.env.IA_MODELE_CONVERSATION || "google/gemini-2.5-flash-lite",
   RESUME: process.env.IA_MODELE_RESUME || "google/gemini-2.5-flash-lite",
   VISION: process.env.IA_MODELE_VISION || "google/gemini-2.5-flash-lite",
 };
+
+// Modele de CLASSIFICATION type-safe (API Decisions). Il ne fait PAS d'OCR :
+// il recoit la transcription BRUTE d'un resultat d'appel et choisit une
+// categorie imposee, avec une CONFIANCE calibree. On s'en sert pour classer
+// les codes manuscrits de relance (OCR separe -> classement separe).
+const MODELE_CLASSIFICATION = process.env.IA_MODELE_CLASSIFICATION || "typesafe/jev-1.13";
+const TIMEOUT_CLASSIFICATION = Number(process.env.IA_TIMEOUT_CLASSIFICATION || 60000);
 
 // Modele de REPLI par tache : quand le modele primaire echoue (gratuit sature
 // — plafond 50 req/jour —, timeout, rate-limit, erreur reseau), on bascule
@@ -45,6 +55,12 @@ const TIMEOUTS = {
   RESUME: Number(process.env.IA_TIMEOUT_RESUME || 120000),
   VISION: Number(process.env.IA_TIMEOUT_VISION || 90000),
 };
+
+// Niveau d'effort de raisonnement pour l'OCR vision. Les modeles Gemini 3.x
+// atteignent 97% a effort "low" (banc d'essai fiche manuscrite) sans etre plus
+// lents. Vide = pas de parametre reasoning (comportement d'origine, pour les
+// modeles qui ne l'exposent pas).
+const VISION_EFFORT = (process.env.IA_VISION_EFFORT || "").trim();
 
 const TENTATIVES = Number(process.env.IA_TENTATIVES || 3);
 
@@ -164,6 +180,47 @@ async function appeler(tache, corps) {
   throw derniereErreur;
 }
 
+// Classement type-safe via l'API Decisions (endpoint /api/alpha/decisions).
+// `questions` = { id: { type:"choice", instructions, criteria } }, `state` =
+// contexte partage. Renvoie l'objet `answers` : { id: { choice, probabilities,
+// confidence } }. Un seul appel classe toutes les lignes (batch), ~0,0016 $ /
+// 90 lignes. Jette en cas d'echec (l'appelant replie sur la regle locale).
+async function appelerDecisions(questions, state) {
+  const modele = MODELE_CLASSIFICATION;
+  if (!MODELES_AUTORISES.has(modele)) {
+    throw new Error(
+      `Modele de classification ${modele} absent du garde-fou IA_MODELES_AUTORISES ` +
+      `(${[...MODELES_AUTORISES].join(", ")}). L'ajouter pour activer le classement type-safe.`
+    );
+  }
+  const t0 = Date.now();
+  try {
+    const reponse = await fetch(`${RACINE_API}/alpha/decisions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${cle()}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: modele, state, questions, usage: { include: true } }),
+      signal: AbortSignal.timeout(TIMEOUT_CLASSIFICATION),
+    });
+    if (!reponse.ok) {
+      const texte = await reponse.text().catch(() => "");
+      throw new Error(`Decisions ${reponse.status} (${modele}): ${texte.slice(0, 300)}`);
+    }
+    const donnees = await reponse.json();
+    if (donnees.error) throw new Error(`Decisions erreur (${modele}): ${JSON.stringify(donnees.error).slice(0, 200)}`);
+    const u = donnees.usage || {};
+    tracerAppel({
+      tache: "CLASSIFICATION", modele,
+      prompt_tokens: u.prompt_tokens ?? null, completion_tokens: u.completion_tokens ?? null,
+      total_tokens: u.total_tokens ?? null, cout: typeof u.cost === "number" ? u.cost : null,
+      duree_ms: Date.now() - t0, statut: "ok",
+    });
+    return donnees.answers || {};
+  } catch (erreur) {
+    tracerAppel({ tache: "CLASSIFICATION", modele, duree_ms: Date.now() - t0, statut: "erreur" });
+    throw erreur;
+  }
+}
+
 // Journalise et affiche un appel modele. Tolerant : la telemetrie ne doit
 // jamais casser la requete.
 function tracerAppel(r) {
@@ -238,7 +295,9 @@ async function construireContenuVision(instruction, chemin) {
 async function lireFichier(instruction, chemin) {
   const { contenu, nettoyage } = await construireContenuVision(instruction, chemin);
   try {
-    const message = await appeler("VISION", { messages: [{ role: "user", content: contenu }], temperature: 0.1 });
+    const corps = { messages: [{ role: "user", content: contenu }], temperature: 0.1 };
+    if (VISION_EFFORT) corps.reasoning = { effort: VISION_EFFORT };
+    const message = await appeler("VISION", corps);
     return message.content || "";
   } finally {
     nettoyage();
@@ -255,11 +314,13 @@ function nettoyerJson(brut) {
 async function extraireFichierJson(instruction, chemin) {
   const { contenu, nettoyage } = await construireContenuVision(instruction, chemin);
   try {
-    const message = await appeler("VISION", {
+    const corps = {
       messages: [{ role: "user", content: contenu }],
       temperature: 0.1,
       response_format: { type: "json_object" },
-    });
+    };
+    if (VISION_EFFORT) corps.reasoning = { effort: VISION_EFFORT };
+    const message = await appeler("VISION", corps);
     try {
       return JSON.parse(nettoyerJson(message.content || "{}"));
     } catch {
@@ -270,4 +331,4 @@ async function extraireFichierJson(instruction, chemin) {
   }
 }
 
-module.exports = { converser, resumer, lireFichier, extraireFichierJson };
+module.exports = { converser, resumer, lireFichier, extraireFichierJson, appelerDecisions };

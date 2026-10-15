@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const { rechercherLire } = require("./rpc");
 const { chercherParTelephone, resoudreUtilisateur } = require("./requetes");
 const { normaliserTelephone, telephoneValide, detecterDate, analyserResultat } = require("../coeur/referentiel");
+const { classifierResultats, verdictDeSaisie } = require("../coeur/classifieur");
 const { extraireFichierJson } = require("../ia");
 const { enregistrerOcr, lireOcr } = require("../memoire/base");
 const { disponible: popplerDispo, pdfEnImages, nettoyer } = require("../documents/pdf_en_images");
@@ -139,9 +140,12 @@ function fusionner(pages) {
   return {
     type_fiche: ok.find((p) => p.type_fiche)?.type_fiche || "autre",
     agent: entete.agent || "",
-    // On garde la date de session par page pour la porter sur ses lignes, et le
-    // numero de page (ordre de lecture) pour pouvoir signaler les pages sans date.
-    lignes: ok.flatMap((p, idx) => (p.lignes || []).map((l) => ({ ...l, date_session_brut: p.date_session_brut || "", _page: idx + 1 }))),
+    // On garde la date de session par page pour la porter sur ses lignes, le
+    // numero de page (ordre de lecture) ET le rang de la ligne DANS sa page,
+    // pour pouvoir pointer une ligne precise a l'utilisateur ("page 2, ligne 7").
+    lignes: ok.flatMap((p, idx) =>
+      (p.lignes || []).map((l, r) => ({ ...l, date_session_brut: p.date_session_brut || "", _page: idx + 1, _rang: r + 1 }))
+    ),
   };
 }
 
@@ -218,7 +222,26 @@ async function construirePlanRelance(extraction, indice = "") {
     vides: [],
     invalides: [],
     sans_date: [], // lignes NON importees faute de date d'appel (page a dater)
+    a_revoir: [], // lignes importees mais a confirmer (classement peu sur)
   };
+
+  // --- CLASSEMENT type-safe (jev), en UN seul appel pour toute la fiche ---
+  // L'OCR a transcrit le resultat BRUT ; jev le range dans une categorie avec
+  // une confiance. Au-dessus du seuil on ecrit d'office ; en dessous on marque
+  // "a revoir" en PROPOSANT le meilleur choix. Si jev est indisponible, on
+  // replie ligne par ligne sur la regle locale analyserResultat.
+  const lignesAClasser = (extraction.lignes || []).filter((l) => l.resultat && String(l.resultat).trim());
+  const verdictParLigne = new Map();
+  if (lignesAClasser.length) {
+    try {
+      const verdicts = await classifierResultats(
+        lignesAClasser.map((l) => ({ resultat_brut: l.resultat, commentaire: l.commentaire }))
+      );
+      lignesAClasser.forEach((l, i) => verdictParLigne.set(l, verdicts[i]));
+    } catch (e) {
+      console.error("[classif] jev indisponible, repli regle locale:", e.message);
+    }
+  }
 
   for (const ligne of extraction.lignes || []) {
     const tel = normaliserTelephone(ligne.telephone);
@@ -229,18 +252,35 @@ async function construirePlanRelance(extraction, indice = "") {
     // avec le lecteur de codes (fiable), tout en gardant les etiquettes
     // deduites du commentaire (concurrent, deja achete, hors ville...).
     if (ligne.resultat && String(ligne.resultat).trim()) {
-      const c = analyserResultat(ligne.resultat, ligne.commentaire);
+      // Verdict jev (pre-classe en batch) ; a defaut, regle locale.
+      const c = verdictParLigne.get(ligne) || analyserResultat(ligne.resultat, ligne.commentaire);
       if (c.statut === "ok") {
         res.statut = "ok";
         res.event_type = c.event_type;
         res.sous_type = c.sous_type;
         res.non_categorise = false;
+        res.a_revoir = false;
         if (!res.note && c.note) res.note = c.note;
         if (c.tag) res.tags = [...(res.tags || []), c.tag];
+      } else {
+        // Code du jour non tranche (confiance < seuil, illisible, ou hors
+        // commercial). Si le COMMENTAIRE a deja donne une categorie claire, on
+        // la garde ; sinon "a revoir" en PROPOSANT le meilleur choix de jev.
+        const commentaireAClasse = res.statut === "ok" && !res.non_categorise;
+        if (!commentaireAClasse) {
+          res.statut = "ok"; res.event_type = "call"; res.sous_type = null;
+          res.non_categorise = true; res.a_revoir = true;
+          const sugg = c.propose && c.propose.categorie;
+          const conf = c.confiance != null ? ` ${Math.round(c.confiance * 100)}%` : "";
+          res.note = c.statut === "routage"
+            ? (c.note || "Hors commercial (DP/DE)")
+            : sugg ? `À revoir — suggéré : ${sugg}${conf}` : "À revoir (classement incertain)";
+          res.suggestion = sugg || null;
+        }
       }
       // Numero marque incorrect/faux sur la feuille -> faux numero.
       if (/INCORRECT|FAUX\s*NUM|N[' ]?EXISTE/.test((ligne.resultat || "").toUpperCase())) {
-        res.statut = "ok"; res.event_type = "call"; res.sous_type = "bad_number"; res.non_categorise = false;
+        res.statut = "ok"; res.event_type = "call"; res.sous_type = "bad_number"; res.non_categorise = false; res.a_revoir = false;
       }
     }
 
@@ -321,6 +361,10 @@ async function construirePlanRelance(extraction, indice = "") {
       agent_id: agentEffectif ? agentEffectif.id : null,
       agent_nom: agentEffectif ? agentEffectif.name : (ligne.agent_ligne || plan.agent || "?"),
       non_categorise: !!res.non_categorise,
+      a_revoir: !!res.a_revoir, // classement peu sur : ecrit mais a confirmer
+      suggestion: res.suggestion || null, // categorie proposee par jev (a confirmer)
+      page: ligne._page || null,
+      rang: ligne._rang || null,
       tags: res.tags || null, // etiquettes crm.tag (Deja achete, Concurrent, Hors ville, Proforma...)
       notes,
       rdv: null,
@@ -333,6 +377,17 @@ async function construirePlanRelance(extraction, indice = "") {
     }
 
     plan.actions.push(action);
+    // Ligne "a revoir" : on garde un pointeur (index dans plan.actions) + le
+    // repere physique (page, rang) pour que l'utilisateur confirme/corrige.
+    if (res.a_revoir) {
+      plan.a_revoir.push({
+        ref: plan.a_revoir.length + 1,
+        action_index: plan.actions.length - 1,
+        nom: action.nom, telephone: tel,
+        brut: ligne.resultat || "", suggestion: res.suggestion || null,
+        page: ligne._page || null, rang: ligne._rang || null,
+      });
+    }
   }
 
   plan.resume = {
@@ -342,6 +397,7 @@ async function construirePlanRelance(extraction, indice = "") {
     rdv: plan.actions.filter((a) => a.rdv).length,
     whatsapp: plan.actions.filter((a) => a.event_type === "message").length,
     non_categorises: plan.actions.filter((a) => a.non_categorise).length,
+    a_revoir: plan.a_revoir.length,
     vides: plan.vides.length,
     invalides: plan.invalides.length,
     sans_date: plan.sans_date.length,
@@ -375,7 +431,20 @@ function resumePlanRelance(plan) {
       lignes.push(`   • ${nom} : ${info.n}${info.resolu ? "" : " (non retrouve dans Odoo, non attribue)"}`);
     }
   }
-  if (r.non_categorises) lignes.push(`- ${r.non_categorises} commentaires importes mais « a categoriser » (code peu clair, texte garde)`);
+  // "A categoriser" purs (sans suggestion) = non_categorises moins les "a revoir".
+  const nonCatPurs = Math.max(0, (r.non_categorises || 0) - (r.a_revoir || 0));
+  if (nonCatPurs) lignes.push(`- ${nonCatPurs} commentaires importes mais « a categoriser » (code peu clair, texte garde)`);
+  if (r.a_revoir) {
+    lignes.push(`- 🔎 ${r.a_revoir} lignes À REVOIR (classement incertain) — NON tranchees, a confirmer :`);
+    for (const l of (plan.a_revoir || [])) {
+      const ou = l.page ? `page ${l.page}, ligne ${l.rang}` : `ligne ${l.rang || "?"}`;
+      lignes.push(`   #${l.ref} — ${ou} — ${l.nom || l.telephone} : lu « ${l.brut || "?"} »${l.suggestion ? ` → suggere « ${l.suggestion} »` : ""}`);
+    }
+    lignes.push(
+      "   ↳ Donne-moi les vraies valeurs, ex : « #1 NR #2 RDV » (codes : NR, NRP, PI, RDV, PL, BL, ND, DP…).",
+      "     Puis « oui » pour enregistrer. Un simple « oui » garde ces lignes « a categoriser »."
+    );
+  }
   if (r.vides) lignes.push(`- ${r.vides} lignes sans commentaire ignorees`);
   if (r.invalides) lignes.push(`- ${r.invalides} numeros invalides ignores`);
   if (r.sans_date) {
@@ -386,4 +455,65 @@ function resumePlanRelance(plan) {
   return lignes.join("\n");
 }
 
-module.exports = { extraireFicheReception, analyserCommentaireRelance, construirePlanRelance, resumePlanRelance };
+// --- CORRECTIONS humaines des lignes "a revoir" --------------------------
+// L'utilisateur repond avec les vraies valeurs, ex : "#1 NR  #2 RDV". On
+// reconnait "#n <code>", "ligne n <code>", "n=<code>". <code> = code manuscrit
+// (NR, NRP, PI, RDV, PL, BL, ND, DP…) ou libelle de categorie ("Nous revient").
+const RE_CORRECTION = /(?:#|n[°o]\.?|ligne)\s*(\d{1,3})\s*[:=\-]?\s*([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'’ ]{0,24})|(\d{1,3})\s*[:=]\s*([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'’ ]{0,24})/gi;
+
+function contientCorrections(texte) {
+  RE_CORRECTION.lastIndex = 0;
+  return RE_CORRECTION.test(String(texte || ""));
+}
+
+// Applique les corrections au plan (mutation) : tranche les lignes visees et
+// les retire de la liste "a revoir". Renvoie un compte-rendu.
+function appliquerCorrections(plan, texte) {
+  const appliquees = [];
+  const inconnues = [];
+  if (!plan || !Array.isArray(plan.a_revoir)) return { appliquees, inconnues };
+  const s = String(texte || "");
+  RE_CORRECTION.lastIndex = 0;
+  let m;
+  while ((m = RE_CORRECTION.exec(s))) {
+    const ref = Number(m[1] || m[3]);
+    const brut = (m[2] || m[4] || "").trim();
+    const entry = plan.a_revoir.find((x) => x.ref === ref);
+    if (!entry) { inconnues.push({ ref, raison: "numero inconnu" }); continue; }
+    // Essaie la saisie entiere, puis le premier mot (si "RDV oui").
+    const v = verdictDeSaisie(brut) || verdictDeSaisie(brut.split(/\s+/)[0] || "");
+    if (!v) { inconnues.push({ ref, saisie: brut, raison: "code non reconnu" }); continue; }
+    const a = plan.actions[entry.action_index];
+    if (!a) { inconnues.push({ ref, raison: "ligne absente" }); continue; }
+
+    if (v.statut === "routage") {
+      // Hors commercial (DP/DE) : pas de sous-type a ecrire, on le note.
+      a.sous_type = null; a.event_type = "call"; a.non_categorise = true;
+      a.note_correction = "Hors commercial (DP/DE)";
+    } else {
+      a.sous_type = v.sous_type; a.event_type = v.event_type || "call";
+      a.non_categorise = false;
+    }
+    a.a_revoir = false; a.suggestion = null;
+    a.notes = `${a.notes || ""} [corrige: ${v.categorie}]`.trim();
+    // RDV corrige sans date connue -> evenement cree, calendrier seulement si date.
+    if ((v.sous_type === "meeting_booked" || v.sous_type === "video_meeting_booked") && !a.rdv) {
+      a.rdv = null; // pas de date fournie ; l'evenement garde le sous-type RDV
+    }
+    appliquees.push({ ref, categorie: v.categorie, nom: a.nom || a.telephone });
+  }
+  // Retire les lignes corrigees de la liste "a revoir" et recompte.
+  const refsOK = new Set(appliquees.map((x) => x.ref));
+  plan.a_revoir = plan.a_revoir.filter((x) => !refsOK.has(x.ref));
+  if (plan.resume) {
+    plan.resume.a_revoir = plan.a_revoir.length;
+    plan.resume.non_categorises = plan.actions.filter((a) => a.non_categorise).length;
+    plan.resume.rdv = plan.actions.filter((a) => a.rdv).length;
+  }
+  return { appliquees, inconnues };
+}
+
+module.exports = {
+  extraireFicheReception, analyserCommentaireRelance, construirePlanRelance,
+  resumePlanRelance, contientCorrections, appliquerCorrections,
+};

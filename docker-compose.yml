@@ -25,23 +25,32 @@ services:
       # verrouillees par confirmation. Repli gemini-2.5-flash (9/9) si glm cale.
       IA_MODELE_CONVERSATION: ${IA_MODELE_CONVERSATION:-z-ai/glm-4.7-flash}
       IA_MODELE_RESUME: ${IA_MODELE_RESUME:-z-ai/glm-4.7-flash}
-      # Vision/OCR : qwen3.5-9b a gagne le banc d'essai (30/30 lignes, 5/5 RDV,
-      # alignement correct, SEUL a detecter le concurrent) a 0,15 $/1M output.
-      # Lent en prod (il depassait 90 s/page) -> timeout vision elargi a 120 s
-      # pour qu'il finisse en 1 tentative ; repli flash-lite s'il cale quand meme.
-      IA_MODELE_VISION: ${IA_MODELE_VISION:-qwen/qwen3.5-9b}
+      # Vision/OCR : google/gemini-3.6-flash a gagne le banc d'essai fiche
+      # manuscrite (97% = 87/90 lignes, le plus rapide a 8-10 s/page) a effort
+      # "low". Il bat l'ancien champion gemini-2.5-flash (93%). Repli = ce
+      # dernier (93%, in 0,30 $/1M), pas flash-lite qui decale les lignes.
+      IA_MODELE_VISION: ${IA_MODELE_VISION:-google/gemini-3.6-flash}
       IA_TIMEOUT_VISION: ${IA_TIMEOUT_VISION:-120000}
+      # Effort de raisonnement de l'OCR : "low" suffit aux Gemini 3.x pour 97%
+      # sans ralentir. Vide pour un modele qui n'expose pas reasoning.
+      IA_VISION_EFFORT: ${IA_VISION_EFFORT:-low}
+      # CLASSEMENT type-safe des resultats d'appel (API Decisions). L'OCR
+      # transcrit le code BRUT, jev le range avec une CONFIANCE calibree :
+      # >= seuil -> ecrit d'office (0 erreur silencieuse au banc), < seuil ->
+      # "a revoir" en proposant le meilleur choix. ~0,0016 $/fiche de 90 lignes.
+      IA_MODELE_CLASSIFICATION: ${IA_MODELE_CLASSIFICATION:-typesafe/jev-1.13}
+      IA_CLASSIF_SEUIL: ${IA_CLASSIF_SEUIL:-0.8}
       # Repli AUTOMATIQUE quand le primaire echoue (gratuit sature 50/jour,
       # timeout, rate-limit). xiaomi/mimo-v2.5 : le payant le moins cher qui
       # choisit bien ses outils (~0.00016 $/requete, 8/8 outils). La vision
-      # retombe sur flash-lite (rapide) si qwen cale/time-out.
+      # retombe sur gemini-2.5-flash (93%) si gemini-3.6 cale/time-out.
       IA_MODELE_CONVERSATION_REPLI: ${IA_MODELE_CONVERSATION_REPLI:-google/gemini-2.5-flash}
       IA_MODELE_RESUME_REPLI: ${IA_MODELE_RESUME_REPLI:-xiaomi/mimo-v2.5}
-      IA_MODELE_VISION_REPLI: ${IA_MODELE_VISION_REPLI:-google/gemini-2.5-flash-lite}
+      IA_MODELE_VISION_REPLI: ${IA_MODELE_VISION_REPLI:-google/gemini-2.5-flash}
       # Liste blanche budget : SEULS ces modeles peuvent etre appeles. Doit
-      # contenir TOUS les modeles ci-dessus (primaires + replis), sinon le
-      # garde-fou retire le modele du plan.
-      IA_MODELES_AUTORISES: ${IA_MODELES_AUTORISES:-z-ai/glm-4.7-flash,xiaomi/mimo-v2.5,qwen/qwen3.5-9b,google/gemini-2.5-flash-lite,google/gemini-2.5-flash,dots-studio/dots-3-note-preview:free}
+      # contenir TOUS les modeles ci-dessus (primaires + replis + classement),
+      # sinon le garde-fou retire le modele du plan.
+      IA_MODELES_AUTORISES: ${IA_MODELES_AUTORISES:-z-ai/glm-4.7-flash,xiaomi/mimo-v2.5,google/gemini-3.6-flash,google/gemini-2.5-flash-lite,google/gemini-2.5-flash,typesafe/jev-1.13,dots-studio/dots-3-note-preview:free}
 
       # Odoo PRODUCTION (app., jamais odooee : base fantome).
       ODOO_URL: ${ODOO_URL:-https://app.alphamotors-cameroun.com}
