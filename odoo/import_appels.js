@@ -1,7 +1,7 @@
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
-const { creer, rechercherLire, uid } = require("./rpc");
+const { creer, rechercherLire, uid, mettreAJour } = require("./rpc");
 
 // ir.model id d'un modele (mail.activity exige res_model_id, pas la chaine).
 let _idCrmLead = null;
@@ -59,6 +59,26 @@ const TYPE_ACTIVITE = {
   meeting: Number(process.env.ODOO_ACTIVITY_MEETING_ID || 3),
   video: Number(process.env.ODOO_ACTIVITY_VIDEO_ID || 24),
   callback: Number(process.env.ODOO_ACTIVITY_CALL_ID || 2),
+};
+
+// Statut d'appel de la PISTE (crm.lead, champ studio). On y repercute le
+// resultat du jour. sub_type dealership.event.log -> libelle du statut (la
+// selection studio a valeur = libelle). "call_back" n'a pas d'equivalent dans
+// cette liste -> on ne touche pas au statut pour un rappel.
+const CHAMP_STATUT_APPEL = process.env.ODOO_LEAD_STATUT_FIELD || "x_studio_selection_field_3j5_1igm2769i";
+const STATUT_APPEL = {
+  no_answer: "Ne répond pas",
+  unreachable: "Injoignable",
+  wiil_come_back: "Nous revient",
+  already_came: "Déjà Passé",
+  client: "Déjà Acheté",
+  not_online: "PL",
+  cant_call_now: "Non Disponible",
+  interested: "Intéressé",
+  not_interested: "Pas intéressé",
+  video_meeting_booked: "RDV Vidéo",
+  meeting_booked: "RDV",
+  bad_number: "Faux numéro",
 };
 
 // Instruction par PAGE : on extrait chaque page separement (un seul appel de
@@ -422,13 +442,22 @@ async function ecrireActionOdoo(a, ctx, resultat) {
     // Etiquettes : a.tag (unique, legacy) + a.tags (liste). Chaque nom est
     // resolu (crm.tag cree au besoin).
     const nomsTags = [...new Set([...(Array.isArray(a.tags) ? a.tags : []), ...(a.tag ? [a.tag] : [])])];
-    if (nomsTags.length) {
-      const ids = [];
-      for (const nom of nomsTags) { try { ids.push(await resoudreTag(nom)); } catch (e) { console.error("[tag]", nom, e.message); } }
-      if (ids.length) evenement.tag_ids = [[6, 0, ids]];
-    }
+    const tagIds = [];
+    for (const nom of nomsTags) { try { tagIds.push(await resoudreTag(nom)); } catch (e) { console.error("[tag]", nom, e.message); } }
+    if (tagIds.length) evenement.tag_ids = [[6, 0, tagIds]];
     eventId = await creer("dealership.event.log", evenement);
     resultat.evenements += 1;
+
+    // --- Repercussion sur la PISTE (crm.lead) : etiquettes + statut appel ---
+    // Etiquettes AJOUTEES (4) pour ne pas ecraser celles deja posees sur la
+    // fiche. Statut appel mis a jour vers le resultat du jour (si correspondance).
+    const majPiste = {};
+    if (tagIds.length) majPiste.tag_ids = tagIds.map((id) => [4, id]);
+    const statut = STATUT_APPEL[a.sous_type];
+    if (statut) majPiste[CHAMP_STATUT_APPEL] = statut;
+    if (Object.keys(majPiste).length) {
+      try { await mettreAJour("crm.lead", leadId, majPiste); } catch (e) { resultat.echecs.push({ telephone: a.telephone, etape: "maj piste", erreur: e.message }); }
+    }
 
     if (a.rdv) {
       try {

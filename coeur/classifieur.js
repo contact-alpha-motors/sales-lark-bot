@@ -14,8 +14,8 @@
 // automatiquement, 0 erreur silencieuse ; les 7 incertaines (dont l'unique
 // vraie erreur) partent en "a revoir". jev brut 89/90 (99%).
 //
-// Convention direction (provisoire) : "injoignable" (hors reseau, ne sonne pas)
-// = Faux numero, en attendant une categorie dediee cote Odoo.
+// "injoignable" (hors reseau, le numero ne sonne pas) = categorie dediee
+// "Injoignable" (sub_type unreachable), distincte de Faux numero.
 // ---------------------------------------------------------------------------
 
 const { appelerDecisions } = require("../ia");
@@ -37,7 +37,8 @@ const CRITERES = {
   "RDV vidéo": "rendez-vous en visio / video",
   "Déjà passé": "le client est deja venu au showroom",
   "Déjà acheté": "le client a deja achete un vehicule",
-  "Faux numéro": "numero faux / incorrect / inexistant, OU 'injoignable' (hors reseau, ne sonne pas) et ses variantes OCR (ingoignable, imjoignable, injoign)",
+  "Faux numéro": "numero faux / incorrect / inexistant",
+  "Injoignable": "'injoignable' (et variantes OCR: ingoignable, imjoignable, injoign) : le prospect est hors reseau, son numero ne sonne pas",
   "Hors commercial": "DP = demande de partenariat, ou DE = demande d'emploi",
   "Illisible": "vraiment illisible / indechiffrable",
 };
@@ -45,7 +46,7 @@ const CRITERES = {
 const CONTEXTE =
   "Feuille de relance telephonique Alpha Motors (concession auto). Codes manuscrits usuels : " +
   "PI=pas interesse, NR=nous revient, NRP=ne repond pas, RDV, PL=pas en ligne, BL=budget limite (interesse), " +
-  "DP=demande de partenariat, DE=demande d'emploi, ND=non disponible. 'Injoignable' (hors reseau, le numero ne sonne pas) = Faux numero (provisoire). " +
+  "DP=demande de partenariat, DE=demande d'emploi, ND=non disponible. 'Injoignable' = hors reseau, le numero ne sonne pas (categorie dediee). " +
   "Le texte peut etre mal ecrit ou mal lu par l'OCR.";
 
 // Categorie jev -> verdict compatible avec analyserResultat :
@@ -63,6 +64,7 @@ const VERS_VERDICT = {
   "Déjà passé": { statut: "ok", sous_type: "already_came", event_type: "call", canon: "DEJA_PASSE", note: "Déjà passé au showroom" },
   "Déjà acheté": { statut: "ok", sous_type: "client", event_type: "call", canon: "DA", note: "Déjà acheté" },
   "Faux numéro": { statut: "ok", sous_type: "bad_number", event_type: "call", canon: "FAUX" },
+  "Injoignable": { statut: "ok", sous_type: "unreachable", event_type: "call", canon: "INJ" },
   "Hors commercial": { statut: "routage", canon: "DP/DE", note: "Hors commercial (partenariat/emploi)" },
   "Illisible": { statut: "ambigu", canon: "illisible", note: "" },
 };
@@ -162,7 +164,7 @@ function sansAcc(s) {
 const CODE_VERS_CATEGORIE = {
   NR: "Nous revient", NRP: "Ne répond pas", PI: "Pas intéressé", RDV: "RDV",
   PL: "Pas en ligne", BL: "Intéressé", ND: "Non disponible", DP: "Hors commercial",
-  DE: "Hors commercial", DA: "Déjà acheté", SAV: "Pas intéressé",
+  DE: "Hors commercial", DA: "Déjà acheté", SAV: "Pas intéressé", INJ: "Injoignable",
 };
 function verdictDeSaisie(saisie) {
   const s = sansAcc(saisie);
