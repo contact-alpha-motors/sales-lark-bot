@@ -107,14 +107,26 @@ function analyserResultat(codeResultat, commentaire = "") {
     return { statut: "routage", canon: c, note: NOTE_ROUTAGE[c] || "Hors commercial" };
   }
 
-  // Formes ECRITES (pas un code) qui signifient "pas joignable" = PL.
-  // Couvre injoignable + ses variantes OCR (imjoign...), telephone eteint,
-  // messagerie, appel renvoye.
-  if (/INJOIG|IMJOIG|JOIGN|[EÉ]TEINT|MESSAGERIE|APPEL RENVOY/.test(texte)) {
+  // --- Formes ECRITES (pas un code court) de la legende maison ---
+  // Convention direction : "injoignable" = NE REPOND PAS (no_answer), et NON
+  // "pas en ligne". On la distingue donc de l'etat technique (eteint/messagerie).
+  if (/INJOIG|IMJOIG|INGOIG|IJOIG|JOIGN|GOIGN/.test(texte)) {
+    return { statut: "ok", sous_type: "no_answer", event_type: "call", canon: "NRP", note: "" };
+  }
+  // Etat technique = PAS EN LIGNE (eteint, messagerie, appel renvoye, hors service).
+  if (/[EÉ]TEINT|MESSAGERIE|APPEL RENVOY|HORS SERVICE|PAS EN LIGNE/.test(texte)) {
     return { statut: "ok", sous_type: "not_online", event_type: "call", canon: "PL", note: "" };
   }
+  // Non disponible (contact etabli mais indispo).
+  if (/INDISPON|NON DISPON/.test(texte)) {
+    return { statut: "ok", sous_type: "cant_call_now", event_type: "call", canon: "ND", note: "" };
+  }
+  // Faux numero / numero incorrect / inexistant.
+  if (/FAUX\s*NUM|NUM[EÉ]RO\s*FAUX|INCORRECT|N['’ ]?EXISTE|INEXIST/.test(texte)) {
+    return { statut: "ok", sous_type: "bad_number", event_type: "call", canon: "FAUX", note: "" };
+  }
 
-  // PP, OUI ou code inconnu : on ne tranche pas.
+  // PP, OUI ou code inconnu : on ne tranche pas (ira au classifieur jev).
   return { statut: "ambigu", canon: [...canons][0] || (codeResultat || "").trim(), note: "" };
 }
 

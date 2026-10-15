@@ -225,19 +225,28 @@ async function construirePlanRelance(extraction, indice = "") {
     a_revoir: [], // lignes importees mais a confirmer (classement peu sur)
   };
 
-  // --- CLASSEMENT type-safe (jev), en UN seul appel pour toute la fiche ---
-  // L'OCR a transcrit le resultat BRUT ; jev le range dans une categorie avec
-  // une confiance. Au-dessus du seuil on ecrit d'office ; en dessous on marque
-  // "a revoir" en PROPOSANT le meilleur choix. Si jev est indisponible, on
-  // replie ligne par ligne sur la regle locale analyserResultat.
-  const lignesAClasser = (extraction.lignes || []).filter((l) => l.resultat && String(l.resultat).trim());
+  // --- CLASSEMENT : codes maison d'ABORD (deterministe, certain), jev ENSUITE ---
+  // Les codes de la legende (NR, NRP, PI, RDV, PL/PEL, BL, ND, DP/DE, + formes
+  // ecrites injoignable/indisponible/faux numero) sont tranches sans appel ni
+  // seuil par analyserResultat. SEULES les lignes qui restent "ambigues" (prose
+  // libre) partent au classifieur jev (1 appel pour tout le lot), avec seuil de
+  // confiance. jev indisponible -> on garde "ambigu" (repli).
+  const detParLigne = new Map();
+  const lignesPourJev = [];
+  for (const l of extraction.lignes || []) {
+    if (l.resultat && String(l.resultat).trim()) {
+      const det = analyserResultat(l.resultat, l.commentaire);
+      detParLigne.set(l, det);
+      if (det.statut === "ambigu") lignesPourJev.push(l);
+    }
+  }
   const verdictParLigne = new Map();
-  if (lignesAClasser.length) {
+  if (lignesPourJev.length) {
     try {
       const verdicts = await classifierResultats(
-        lignesAClasser.map((l) => ({ resultat_brut: l.resultat, commentaire: l.commentaire }))
+        lignesPourJev.map((l) => ({ resultat_brut: l.resultat, commentaire: l.commentaire }))
       );
-      lignesAClasser.forEach((l, i) => verdictParLigne.set(l, verdicts[i]));
+      lignesPourJev.forEach((l, i) => verdictParLigne.set(l, verdicts[i]));
     } catch (e) {
       console.error("[classif] jev indisponible, repli regle locale:", e.message);
     }
@@ -252,8 +261,9 @@ async function construirePlanRelance(extraction, indice = "") {
     // avec le lecteur de codes (fiable), tout en gardant les etiquettes
     // deduites du commentaire (concurrent, deja achete, hors ville...).
     if (ligne.resultat && String(ligne.resultat).trim()) {
-      // Verdict jev (pre-classe en batch) ; a defaut, regle locale.
-      const c = verdictParLigne.get(ligne) || analyserResultat(ligne.resultat, ligne.commentaire);
+      // Code maison reconnu -> verdict deterministe. Sinon (prose) -> jev.
+      const det = detParLigne.get(ligne) || analyserResultat(ligne.resultat, ligne.commentaire);
+      const c = det.statut === "ambigu" ? (verdictParLigne.get(ligne) || det) : det;
       if (c.statut === "ok") {
         res.statut = "ok";
         res.event_type = c.event_type;
@@ -368,12 +378,15 @@ async function construirePlanRelance(extraction, indice = "") {
       tags: res.tags || null, // etiquettes crm.tag (Deja achete, Concurrent, Hors ville, Proforma...)
       notes,
       rdv: null,
+      callback_date: null, // date structuree du rappel (dealership.event.log.callback_date)
     };
 
     if (res.sous_type === "meeting_booked" || res.sous_type === "video_meeting_booked") {
-      if (res.rdv_date) action.rdv = { date: res.rdv_date, resume: `RDV: ${action.nom || tel}` };
+      if (res.rdv_date) action.rdv = { date: res.rdv_date, resume: `RDV: ${action.nom || tel}`, type: res.sous_type === "video_meeting_booked" ? "video" : "meeting" };
     } else if (res.sous_type === "call_back" && res.callback_date) {
-      action.rdv = { date: res.callback_date, resume: `Relance prevue: ${action.nom || tel}` };
+      // Rappel : activite de type Appel/Relance (pas Meeting) + date structuree.
+      action.rdv = { date: res.callback_date, resume: `Rappel: ${action.nom || tel}`, type: "callback" };
+      action.callback_date = res.callback_date;
     }
 
     plan.actions.push(action);
@@ -444,6 +457,14 @@ function resumePlanRelance(plan) {
       "   ↳ Donne-moi les vraies valeurs, ex : « #1 NR #2 RDV » (codes : NR, NRP, PI, RDV, PL, BL, ND, DP…).",
       "     Puis « oui » pour enregistrer. Un simple « oui » garde ces lignes « a categoriser »."
     );
+  }
+  // Etiquettes detectees (posees sur l'evenement) : concurrent, deja achete,
+  // hors ville, proforma, SAV... pour que l'utilisateur voie ce qui sera taggue.
+  const tagsCount = {};
+  for (const a of plan.actions) for (const t of (a.tags || [])) tagsCount[t] = (tagsCount[t] || 0) + 1;
+  const tagsListe = Object.entries(tagsCount).sort((a, b) => b[1] - a[1]);
+  if (tagsListe.length) {
+    lignes.push(`- 🏷️ Étiquettes détectées : ` + tagsListe.map(([t, n]) => `${t} (${n})`).join(", "));
   }
   if (r.vides) lignes.push(`- ${r.vides} lignes sans commentaire ignorees`);
   if (r.invalides) lignes.push(`- ${r.invalides} numeros invalides ignores`);

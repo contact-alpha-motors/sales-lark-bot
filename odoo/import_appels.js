@@ -20,13 +20,19 @@ function estErreurOdoo(e) {
   return /Odoo HTTP|Odoo:|ECONN|ETIMEDOUT|timeout|530|50[234]/i.test((e && e.message) || "");
 }
 
-// Cree l'activite de suivi (RDV/rappel) d'une ligne. Champs obligatoires Odoo :
-// res_model_id (id ir.model), res_id, date_deadline, user_id.
+// Cree l'activite de suivi d'une ligne. Le TYPE depend de la nature :
+//  - RDV physique  -> "Meeting"   (agenda)
+//  - RDV video     -> "RDV Video"
+//  - rappel        -> "Call"      (relance telephonique, PAS un meeting)
+// Champs obligatoires Odoo : res_model_id (id ir.model), res_id, date_deadline,
+// user_id.
 async function creerActivite(leadId, a, plan) {
+  const type = (a.rdv && a.rdv.type) || "meeting";
+  const activity_type_id = TYPE_ACTIVITE[type] || TYPE_ACTIVITE.meeting;
   return creer("mail.activity", {
     res_model_id: await modeleId("crm.lead"),
     res_id: leadId,
-    activity_type_id: TYPE_ACTIVITE_RDV,
+    activity_type_id,
     date_deadline: a.rdv.date,
     summary: a.rdv.resume,
     user_id: a.agent_id || plan.agent_id || (await uid()),
@@ -47,7 +53,13 @@ const { disponible: popplerDispo, pdfEnImages, nettoyer } = require("../document
 // listes. Rien ne part avant le "oui" de l'utilisateur.
 // ---------------------------------------------------------------------------
 
-const TYPE_ACTIVITE_RDV = Number(process.env.ODOO_ACTIVITY_MEETING_ID || 3); // "Meeting"
+// Types d'activite Odoo par nature de suivi (ids mail.activity.type).
+// Meeting=3, "RDV Video"=24, Call=2 (categorie phonecall) par defaut.
+const TYPE_ACTIVITE = {
+  meeting: Number(process.env.ODOO_ACTIVITY_MEETING_ID || 3),
+  video: Number(process.env.ODOO_ACTIVITY_VIDEO_ID || 24),
+  callback: Number(process.env.ODOO_ACTIVITY_CALL_ID || 2),
+};
 
 // Instruction par PAGE : on extrait chaque page separement (un seul appel de
 // vision par image, en parallele). Bien plus rapide et robuste qu'un seul
@@ -300,13 +312,21 @@ async function construirePlan(extraction, indice = "") {
       tag: res.tag || null,
       notes,
       rdv: null,
+      callback_date: null,
     };
 
     // Activite si RDV avec une date exploitable.
-    if ((res.sous_type === "meeting_booked" || res.sous_type === "video_meeting_booked")) {
+    if (res.sous_type === "meeting_booked" || res.sous_type === "video_meeting_booked") {
       const dateRdv = parserDateRdv(ligne.rdv_texte || ligne.commentaire, anneeDefaut);
       if (dateRdv) {
-        action.rdv = { date: dateRdv, resume: `RDV: ${action.nom || tel}${ligne.vehicule ? ` - ${ligne.vehicule}` : ""}` };
+        action.rdv = { date: dateRdv, resume: `RDV: ${action.nom || tel}${ligne.vehicule ? ` - ${ligne.vehicule}` : ""}`, type: res.sous_type === "video_meeting_booked" ? "video" : "meeting" };
+      }
+    } else if (res.sous_type === "call_back") {
+      // Rappel prevu : activite de type Appel + date structuree callback_date.
+      const dateRappel = parserDateRdv(ligne.rdv_texte || ligne.commentaire, anneeDefaut);
+      if (dateRappel) {
+        action.rdv = { date: dateRappel, resume: `Rappel: ${action.nom || tel}`, type: "callback" };
+        action.callback_date = dateRappel;
       }
     }
 
@@ -394,6 +414,9 @@ async function ecrireActionOdoo(a, ctx, resultat) {
       notes: a.notes,
     };
     if (a.sous_type) evenement.sub_type = a.sous_type; // null = non categorise
+    // Rappel : on remplit la date structuree (champ "Date prochaine appel"),
+    // en plus de l'activite planifiee. Jusqu'ici ce champ restait toujours vide.
+    if (a.callback_date) evenement.callback_date = a.callback_date;
     const agentEvt = a.agent_id || ctx.agent_id;
     if (agentEvt) evenement.user_id = agentEvt;
     // Etiquettes : a.tag (unique, legacy) + a.tags (liste). Chaque nom est

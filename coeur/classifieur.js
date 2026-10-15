@@ -58,7 +58,7 @@ const VERS_VERDICT = {
   "Pas intéressé": { statut: "ok", sous_type: "not_interested", event_type: "call", canon: "PI" },
   "RDV": { statut: "ok", sous_type: "meeting_booked", event_type: "call", canon: "RDV" },
   "RDV vidéo": { statut: "ok", sous_type: "video_meeting_booked", event_type: "video_call", canon: "RDV" },
-  "Déjà passé": { statut: "ok", sous_type: "wiil_come_back", event_type: "call", canon: "NR", note: "Déjà passé au showroom" },
+  "Déjà passé": { statut: "ok", sous_type: "already_came", event_type: "call", canon: "DEJA_PASSE", note: "Déjà passé au showroom" },
   "Déjà acheté": { statut: "ok", sous_type: "client", event_type: "call", canon: "DA", note: "Déjà acheté" },
   "Faux numéro": { statut: "ok", sous_type: "bad_number", event_type: "call", canon: "FAUX" },
   "Hors commercial": { statut: "routage", canon: "DP/DE", note: "Hors commercial (partenariat/emploi)" },
