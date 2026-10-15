@@ -587,4 +587,4 @@ function resumePlan(plan) {
   return lignes.join("\n");
 }
 
-module.exports = { extraireFeuilleAppel, construirePlan, executerPlan, resumePlan, completerEntete, stagerPlan, synchroniser };
+module.exports = { extraireFeuilleAppel, construirePlan, executerPlan, resumePlan, completerEntete, stagerPlan, synchroniser, STATUT_APPEL, TYPE_ACTIVITE };
