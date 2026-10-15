@@ -472,6 +472,29 @@ function hashesParFichier(fragment) {
   return db.prepare("SELECT DISTINCT hash FROM ocr_cache WHERE fichier LIKE ?").all(`%${fragment}%`).map((r) => r.hash);
 }
 
+// Detail des scans dont le nom contient <fragment> (pour confirmer avant purge).
+function detailsOcrParFichier(fragment) {
+  if (!fragment) return [];
+  return db
+    .prepare("SELECT hash, fichier, nb_lignes, DATE(created_at, '+1 hours') AS jour FROM ocr_cache WHERE fichier LIKE ? ORDER BY created_at DESC")
+    .all(`%${fragment}%`);
+}
+
+// Force la relecture d'une fiche : supprime son entree de cache OCR (elle sera
+// re-OCR au prochain envoi). Avec avecAppels=true, supprime AUSSI la memoire de
+// synchro (table appels) pour autoriser une RE-IMPORTATION complete dans Odoo
+// (sinon l'anti-doublon re-saute les lignes deja ecrites). Renvoie le detail.
+function purgerFiche(fragment, { avecAppels = false } = {}) {
+  const lignes = detailsOcrParFichier(fragment);
+  const hashes = [...new Set(lignes.map((l) => l.hash))];
+  if (!hashes.length) return { fichiers: [], hashes: [], ocrSupprimes: 0, appelsSupprimes: 0 };
+  const placeholders = hashes.map(() => "?").join(",");
+  const ocrSupprimes = db.prepare(`DELETE FROM ocr_cache WHERE hash IN (${placeholders})`).run(...hashes).changes;
+  let appelsSupprimes = 0;
+  if (avecAppels) appelsSupprimes = db.prepare(`DELETE FROM appels WHERE ocr_hash IN (${placeholders})`).run(...hashes).changes;
+  return { fichiers: [...new Set(lignes.map((l) => l.fichier))], hashes, ocrSupprimes, appelsSupprimes };
+}
+
 // Liste les fiches deja scannees (local, sans Odoo) — pour le mode degrade.
 function listerFichesScannees(limite = 20) {
   return db
@@ -538,6 +561,8 @@ module.exports = {
   listerEnAttente,
   resumeEnAttente,
   hashesParFichier,
+  detailsOcrParFichier,
+  purgerFiche,
   marquerSynced,
   marquerErreurSync,
   mirrorLeads,

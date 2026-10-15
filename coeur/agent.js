@@ -11,6 +11,8 @@ const {
   lireActionEnAttente,
   prendreActionEnAttente,
   journaliser,
+  detailsOcrParFichier,
+  purgerFiche,
 } = require("../memoire/base");
 
 // ---------------------------------------------------------------------------
@@ -166,6 +168,36 @@ async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichie
     contenu,
     fichier: cheminFichier || null,
   });
+
+  // Commande : forcer la relecture / reimport d'une fiche (purge du cache OCR).
+  //   « relis la fiche gloria »      -> purge ocr_cache (re-OCR au prochain envoi)
+  //   « reimporte la fiche gloria »  -> purge ocr_cache + memoire de synchro
+  //      (autorise une RE-ECRITURE complete dans Odoo)
+  if (texte) {
+    const m = texte.match(/^\s*(relis|relire|r[eé]importe?r?)\s+(?:(?:la|cette|ma)\s+)?fiche\s+(.+?)\s*[?.!]*$/i);
+    if (m) {
+      if (!peutExecuter(senderId, "creer_lead")) {
+        return repondre(chatId, "Tu n'as pas le droit de gerer les imports. Contacte un responsable.");
+      }
+      const avecAppels = /import/i.test(m[1]); // "reimporte" = reimport complet
+      const fragment = m[2].trim().replace(/["'«».]/g, "").trim();
+      const trouve = detailsOcrParFichier(fragment);
+      if (!trouve.length) {
+        return repondre(chatId, `Aucune fiche en cache ne correspond à « ${fragment} ». Renvoie-la directement : si elle n'a jamais ete lue, elle sera lue de zero.`);
+      }
+      if (trouve.length > 1) {
+        const liste = trouve.slice(0, 8).map((f) => `• ${f.fichier} (${f.nb_lignes} lignes, ${f.jour})`).join("\n");
+        return repondre(chatId, `Plusieurs fiches correspondent à « ${fragment} » :\n${liste}\nPrecise un nom plus complet (ex : « ${avecAppels ? "reimporte" : "relis"} la fiche ${trouve[0].fichier.replace(/\.[a-z]+$/i, "")} »).`);
+      }
+      const r = purgerFiche(fragment, { avecAppels });
+      journaliser(chatId, senderId, avecAppels ? "reimport_fiche" : "relecture_fiche", { fragment }, { fichiers: r.fichiers, ocr: r.ocrSupprimes, appels: r.appelsSupprimes });
+      let msg = `C'est fait pour « ${r.fichiers.join(", ")} » : cache OCR purgé.`;
+      if (avecAppels) msg += ` Memoire de synchro effacee (${r.appelsSupprimes} ligne(s)) : la fiche pourra etre RE-IMPORTEE entierement.`;
+      else msg += ` (Les lignes deja importees restent protegees des doublons — dis « reimporte la fiche … » si tu veux forcer une re-ecriture.)`;
+      msg += `\n\nRenvoie-moi la fiche : elle sera relue de zero avec le dernier modele et les dernieres regles.`;
+      return repondre(chatId, msg);
+    }
+  }
 
   // Fiche d'appel en attente d'en-tete : l'utilisateur fournit agent + date
   // (ex. « Ben 22/09/26 ») sans qu'on re-extraie la fiche.
