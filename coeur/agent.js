@@ -11,8 +11,8 @@ const {
   lireActionEnAttente,
   prendreActionEnAttente,
   journaliser,
-  detailsOcrParFichier,
-  purgerFiche,
+  resoudreFiches,
+  purgerHashes,
 } = require("../memoire/base");
 
 // ---------------------------------------------------------------------------
@@ -174,27 +174,30 @@ async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichie
   //   « reimporte la fiche gloria »  -> purge ocr_cache + memoire de synchro
   //      (autorise une RE-ECRITURE complete dans Odoo)
   if (texte) {
-    const m = texte.match(/^\s*(relis|relire|r[eé]importe?r?)\s+(?:(?:la|cette|ma)\s+)?fiche\s+(.+?)\s*[?.!]*$/i);
+    // Verbes toleres : relis/relie/relire/recharge (re-OCR) ; reimporte/
+    // reimporter/refais l'import (re-OCR + re-ecriture Odoo). Accepte « -moi »,
+    // « la/ma/cette fiche », et « de/du/d' » devant le nom.
+    const m = texte.match(/^\s*(r[eé]?li[se]?|r[eé]lire|recharge[rz]?|r[eé]-?importe?[rz]?|r[eé]-?lis)(?:[-\s]?moi)?\s+(?:l(?:a|e|es)?\s+|cette\s+|ma\s+|mon\s+)?(?:fiche|feuille|scan)s?\s+(?:de\s+|du\s+|des\s+|d['’]\s*)?(.+?)\s*[?!.]*$/i);
     if (m) {
       if (!peutExecuter(senderId, "creer_lead")) {
         return repondre(chatId, "Tu n'as pas le droit de gerer les imports. Contacte un responsable.");
       }
-      const avecAppels = /import/i.test(m[1]); // "reimporte" = reimport complet
-      const fragment = m[2].trim().replace(/["'«».]/g, "").trim();
-      const trouve = detailsOcrParFichier(fragment);
+      const avecAppels = /import/i.test(m[1]); // reimporte -> reimport complet
+      const saisie = m[2].trim();
+      const trouve = resoudreFiches(saisie);
       if (!trouve.length) {
-        return repondre(chatId, `Aucune fiche en cache ne correspond à « ${fragment} ». Renvoie-la directement : si elle n'a jamais ete lue, elle sera lue de zero.`);
+        return repondre(chatId, `Je ne trouve aucune fiche en cache qui corresponde à « ${saisie} ». Renvoie-la directement : si elle n'a jamais été lue, elle sera lue de zéro. (Ou dis « quelles fiches sont en cache ? ».)`);
       }
       if (trouve.length > 1) {
         const liste = trouve.slice(0, 8).map((f) => `• ${f.fichier} (${f.nb_lignes} lignes, ${f.jour})`).join("\n");
-        return repondre(chatId, `Plusieurs fiches correspondent à « ${fragment} » :\n${liste}\nPrecise un nom plus complet (ex : « ${avecAppels ? "reimporte" : "relis"} la fiche ${trouve[0].fichier.replace(/\.[a-z]+$/i, "")} »).`);
+        return repondre(chatId, `Plusieurs fiches correspondent à « ${saisie} » :\n${liste}\nPrécise (ex : « ${avecAppels ? "reimporte" : "relis"} la fiche ${trouve[0].fichier.replace(/\.[a-z]+$/i, "")} »).`);
       }
-      const r = purgerFiche(fragment, { avecAppels });
-      journaliser(chatId, senderId, avecAppels ? "reimport_fiche" : "relecture_fiche", { fragment }, { fichiers: r.fichiers, ocr: r.ocrSupprimes, appels: r.appelsSupprimes });
-      let msg = `C'est fait pour « ${r.fichiers.join(", ")} » : cache OCR purgé.`;
-      if (avecAppels) msg += ` Memoire de synchro effacee (${r.appelsSupprimes} ligne(s)) : la fiche pourra etre RE-IMPORTEE entierement.`;
-      else msg += ` (Les lignes deja importees restent protegees des doublons — dis « reimporte la fiche … » si tu veux forcer une re-ecriture.)`;
-      msg += `\n\nRenvoie-moi la fiche : elle sera relue de zero avec le dernier modele et les dernieres regles.`;
+      const r = purgerHashes(trouve.map((f) => f.hash), { avecAppels });
+      journaliser(chatId, senderId, avecAppels ? "reimport_fiche" : "relecture_fiche", { saisie }, { fichier: trouve[0].fichier, ocr: r.ocrSupprimes, appels: r.appelsSupprimes });
+      let msg = `C'est fait pour « ${trouve[0].fichier} » : cache OCR purgé.`;
+      if (avecAppels) msg += ` Mémoire de synchro effacée (${r.appelsSupprimes} ligne(s)) : la fiche pourra être RÉ-IMPORTÉE entièrement.`;
+      else msg += ` (Les lignes déjà importées restent protégées des doublons — dis « réimporte la fiche … » pour forcer une ré-écriture.)`;
+      msg += `\n\nRenvoie-moi la fiche : elle sera relue de zéro avec le dernier modèle et les dernières règles.`;
       return repondre(chatId, msg);
     }
   }

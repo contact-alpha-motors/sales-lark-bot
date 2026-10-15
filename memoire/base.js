@@ -472,27 +472,52 @@ function hashesParFichier(fragment) {
   return db.prepare("SELECT DISTINCT hash FROM ocr_cache WHERE fichier LIKE ?").all(`%${fragment}%`).map((r) => r.hash);
 }
 
-// Detail des scans dont le nom contient <fragment> (pour confirmer avant purge).
-function detailsOcrParFichier(fragment) {
-  if (!fragment) return [];
-  return db
-    .prepare("SELECT hash, fichier, nb_lignes, DATE(created_at, '+1 hours') AS jour FROM ocr_cache WHERE fichier LIKE ? ORDER BY created_at DESC")
-    .all(`%${fragment}%`);
+// Mots vides a ignorer dans une saisie du type "la fiche de gloria 13 octobre".
+const MOTS_VIDES = new Set(["de", "du", "des", "d", "l", "la", "le", "les", "fiche", "fiches", "ma", "mon", "cette", "ce", "scan", "scannee", "scannee"]);
+
+function _motsCles(saisie) {
+  return String(saisie || "")
+    .normalize("NFD").replace(/[̀-ͯ]/g, "") // sans accents
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .split(/\s+/)
+    .filter((m) => m && m.length >= 2 && !MOTS_VIDES.has(m));
 }
 
-// Force la relecture d'une fiche : supprime son entree de cache OCR (elle sera
-// re-OCR au prochain envoi). Avec avecAppels=true, supprime AUSSI la memoire de
-// synchro (table appels) pour autoriser une RE-IMPORTATION complete dans Odoo
-// (sinon l'anti-doublon re-saute les lignes deja ecrites). Renvoie le detail.
-function purgerFiche(fragment, { avecAppels = false } = {}) {
-  const lignes = detailsOcrParFichier(fragment);
-  const hashes = [...new Set(lignes.map((l) => l.hash))];
-  if (!hashes.length) return { fichiers: [], hashes: [], ocrSupprimes: 0, appelsSupprimes: 0 };
-  const placeholders = hashes.map(() => "?").join(",");
-  const ocrSupprimes = db.prepare(`DELETE FROM ocr_cache WHERE hash IN (${placeholders})`).run(...hashes).changes;
+function _lignesParMots(mots) {
+  if (!mots.length) return [];
+  const where = mots.map(() => "fichier LIKE ?").join(" AND ");
+  return db
+    .prepare(`SELECT hash, fichier, nb_lignes, DATE(created_at, '+1 hours') AS jour FROM ocr_cache WHERE ${where} ORDER BY created_at DESC`)
+    .all(...mots.map((m) => `%${m}%`));
+}
+
+// Resout une fiche a partir d'une saisie libre ("gloria 13 octobre", "fiche de
+// gloria"...). Cascade robuste : d'abord TOUS les mots-cles (nom + date), puis
+// les seuls mots alphabetiques (le nom), puis le nom seul. Renvoie les lignes
+// ocr_cache correspondantes (hash, fichier, nb_lignes, jour).
+function resoudreFiches(saisie) {
+  const mots = _motsCles(saisie);
+  if (!mots.length) return [];
+  let rows = _lignesParMots(mots);
+  const alpha = mots.filter((m) => /^[a-z]+$/.test(m) && m.length >= 3);
+  if (!rows.length && alpha.length && alpha.length < mots.length) rows = _lignesParMots(alpha);
+  if (!rows.length && alpha.length > 1) rows = _lignesParMots([alpha[0]]);
+  return rows;
+}
+
+// Supprime des entrees ocr_cache par hash (re-OCR au prochain envoi). Avec
+// avecAppels=true, supprime AUSSI la memoire de synchro (table appels) pour
+// autoriser une RE-IMPORTATION complete dans Odoo (sinon l'anti-doublon
+// re-saute les lignes deja ecrites). Renvoie le compte de ce qui a ete purge.
+function purgerHashes(hashes, { avecAppels = false } = {}) {
+  const uniq = [...new Set((hashes || []).filter(Boolean))];
+  if (!uniq.length) return { hashes: [], ocrSupprimes: 0, appelsSupprimes: 0 };
+  const placeholders = uniq.map(() => "?").join(",");
+  const ocrSupprimes = db.prepare(`DELETE FROM ocr_cache WHERE hash IN (${placeholders})`).run(...uniq).changes;
   let appelsSupprimes = 0;
-  if (avecAppels) appelsSupprimes = db.prepare(`DELETE FROM appels WHERE ocr_hash IN (${placeholders})`).run(...hashes).changes;
-  return { fichiers: [...new Set(lignes.map((l) => l.fichier))], hashes, ocrSupprimes, appelsSupprimes };
+  if (avecAppels) appelsSupprimes = db.prepare(`DELETE FROM appels WHERE ocr_hash IN (${placeholders})`).run(...uniq).changes;
+  return { hashes: uniq, ocrSupprimes, appelsSupprimes };
 }
 
 // Liste les fiches deja scannees (local, sans Odoo) — pour le mode degrade.
@@ -561,8 +586,8 @@ module.exports = {
   listerEnAttente,
   resumeEnAttente,
   hashesParFichier,
-  detailsOcrParFichier,
-  purgerFiche,
+  resoudreFiches,
+  purgerHashes,
   marquerSynced,
   marquerErreurSync,
   mirrorLeads,
