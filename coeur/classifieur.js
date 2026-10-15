@@ -14,18 +14,20 @@
 // automatiquement, 0 erreur silencieuse ; les 7 incertaines (dont l'unique
 // vraie erreur) partent en "a revoir". jev brut 89/90 (99%).
 //
-// Convention direction : "injoignable" = Ne repond pas (PAS "pas en ligne").
+// Convention direction (provisoire) : "injoignable" (hors reseau, ne sonne pas)
+// = Faux numero, en attendant une categorie dediee cote Odoo.
 // ---------------------------------------------------------------------------
 
 const { appelerDecisions } = require("../ia");
 
 const SEUIL = Number(process.env.IA_CLASSIF_SEUIL || 0.8);
 
-// Categories imposees -> critere lu par jev. "injoignable" est RANGE dans
-// "Ne repond pas" (convention), et EXCLU de "Pas en ligne".
+// Categories imposees -> critere lu par jev. PROVISOIRE : "injoignable" (hors
+// reseau, ne sonne pas) est range dans "Faux numero" en attendant une categorie
+// dediee que la direction ajoutera cote Odoo.
 const CRITERES = {
-  "Ne répond pas": "NRP, ou 'injoignable' (et variantes mal ecrites: ingoignable, imjoignable, injoign) : appel non abouti, personne ne decroche",
-  "Pas en ligne": "PL/PEL : numero eteint, messagerie, appel renvoye, pas en service — PAS 'injoignable'",
+  "Ne répond pas": "NRP : appel non abouti, ca sonne mais personne ne decroche",
+  "Pas en ligne": "PL/PEL : numero eteint, messagerie, appel renvoye, pas en service",
   "Non disponible": "ND : contact etabli mais la personne est indisponible / 'indisponible'",
   "Rappel prévu": "un rappel est explicitement programme a une date",
   "Nous revient": "NR : le client doit nous revenir / nous recontacter plus tard",
@@ -35,7 +37,7 @@ const CRITERES = {
   "RDV vidéo": "rendez-vous en visio / video",
   "Déjà passé": "le client est deja venu au showroom",
   "Déjà acheté": "le client a deja achete un vehicule",
-  "Faux numéro": "numero faux / incorrect / inexistant",
+  "Faux numéro": "numero faux / incorrect / inexistant, OU 'injoignable' (hors reseau, ne sonne pas) et ses variantes OCR (ingoignable, imjoignable, injoign)",
   "Hors commercial": "DP = demande de partenariat, ou DE = demande d'emploi",
   "Illisible": "vraiment illisible / indechiffrable",
 };
@@ -43,7 +45,7 @@ const CRITERES = {
 const CONTEXTE =
   "Feuille de relance telephonique Alpha Motors (concession auto). Codes manuscrits usuels : " +
   "PI=pas interesse, NR=nous revient, NRP=ne repond pas, RDV, PL=pas en ligne, BL=budget limite (interesse), " +
-  "DP=demande de partenariat, DE=demande d'emploi, ND=non disponible. 'Injoignable'=ne repond pas. " +
+  "DP=demande de partenariat, DE=demande d'emploi, ND=non disponible. 'Injoignable' (hors reseau, le numero ne sonne pas) = Faux numero (provisoire). " +
   "Le texte peut etre mal ecrit ou mal lu par l'OCR.";
 
 // Categorie jev -> verdict compatible avec analyserResultat :

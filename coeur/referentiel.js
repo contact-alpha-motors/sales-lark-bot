@@ -108,10 +108,12 @@ function analyserResultat(codeResultat, commentaire = "") {
   }
 
   // --- Formes ECRITES (pas un code court) de la legende maison ---
-  // Convention direction : "injoignable" = NE REPOND PAS (no_answer), et NON
-  // "pas en ligne". On la distingue donc de l'etat technique (eteint/messagerie).
+  // "Injoignable" = le prospect est HORS RESEAU, son numero ne sonne pas.
+  // PROVISOIRE (direction 2026-10-15) : faute de categorie dediee, on le classe
+  // en FAUX NUMERO. Note "Injoignable (hors reseau)" conservee pour pouvoir
+  // migrer vers une future categorie "hors_reseau" quand elle existera.
   if (/INJOIG|IMJOIG|INGOIG|IJOIG|JOIGN|GOIGN/.test(texte)) {
-    return { statut: "ok", sous_type: "no_answer", event_type: "call", canon: "NRP", note: "" };
+    return { statut: "ok", sous_type: "bad_number", event_type: "call", canon: "FAUX", note: "Injoignable (hors reseau)" };
   }
   // Etat technique = PAS EN LIGNE (eteint, messagerie, appel renvoye, hors service).
   if (/[EÉ]TEINT|MESSAGERIE|APPEL RENVOY|HORS SERVICE|PAS EN LIGNE/.test(texte)) {
