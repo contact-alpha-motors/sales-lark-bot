@@ -8,25 +8,33 @@
 // d'un coup, sans les envoyer une a une dans Lark. Le flux Lark normal reste
 // inchange.
 //
-//   node scripts/import_fiches.js <dossier> [--go] [--only <texte>]
+//   node scripts/import_fiches.js <dossier> [--go] [--only <texte>] [--stage-only]
+//   node scripts/import_fiches.js --sync-only
 //
-//   (defaut)   DRY-RUN : lit tout et affiche le plan, N'ECRIT RIEN.
-//   --go       ecrit reellement dans Odoo (pistes + evenements + activites).
-//   --only X   ne traite que les fichiers dont le nom contient X.
+//   (defaut)      DRY-RUN : lit tout et affiche le plan, N'ECRIT NI NE GARDE RIEN.
+//   --go          GARDE les lignes en local, puis les POUSSE dans Odoo.
+//   --stage-only  garde en local sans pousser (pousse plus tard).
+//   --sync-only   ne lit aucune fiche : pousse seulement ce qui est deja garde
+//                 en local (pour REPRENDRE apres qu'Odoo soit revenu).
+//   --only X      ne traite que les fichiers dont le nom contient X.
+//
+// RESILIENCE (comme le bot) : --go garde d'abord tout en local (toujours, sans
+// Odoo), puis synchronise. Si Odoo est injoignable, la synchro s'arrete
+// proprement et le reste RESTE en local — relance « --sync-only » (ou
+// « synchronise tout » dans Lark) quand Odoo revient. Meme cache local que le
+// bot : rien n'est perdu, rien n'est duplique (anti-doublon ocr_hash+telephone).
 //
 // A lancer la ou Node + poppler (pdftoppm) + les variables d'env
 // (OPENROUTER_API_KEY, acces Odoo) sont disponibles. Le plus simple : DANS le
 // conteneur du bot (tout y est deja), ex :
 //   docker exec <ctn> node /app/scripts/import_fiches.js /app/downloads --only gloria
-// L'anti-doublon (ocr_hash + telephone, table appels) saute les lignes deja
-// importees : relancer est sans risque de doublon.
 // ---------------------------------------------------------------------------
 
 require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { extraireFeuilleAppel, construirePlan, resumePlan, executerPlan } = require("../odoo/import_appels");
+const { extraireFeuilleAppel, construirePlan, resumePlan, stagerPlan, synchroniser } = require("../odoo/import_appels");
 const { extraireFicheReception, construirePlanRelance, resumePlanRelance } = require("../odoo/import_relance");
 
 // Meme routage que coeur/agent.js.
@@ -78,17 +86,41 @@ function indenter(texte) {
   return String(texte || "").split("\n").map((l) => "  " + l).join("\n");
 }
 
+// Pousse ce qui est garde en local vers Odoo, avec un compte-rendu lisible et
+// resilient (Odoo down -> on garde le reste).
+async function pousser(label) {
+  console.log(`\n— ${label} —`);
+  const s = await synchroniser({});
+  let msg = `Poussé : ${s.synced}/${s.total} ligne(s) — ${s.pistes_creees} pistes, ${s.evenements} evenements, ${s.activites} activites, ${s.deja_synced} deja`;
+  if (s.echecs.length) msg += `, ${s.echecs.length} echecs`;
+  console.log(msg);
+  if (s.interrompu) {
+    console.log("⚠️  Odoo injoignable : le reste est GARDÉ en local. Relance « node scripts/import_fiches.js --sync-only » (ou « synchronise tout » dans Lark) quand Odoo revient.");
+  }
+  if (s.echecs.length) console.log("   échecs:", JSON.stringify(s.echecs.slice(0, 5)));
+  return s;
+}
+
 (async () => {
   const raw = process.argv.slice(2);
-  let dossier = null, only = null, go = false;
+  let dossier = null, only = null, go = false, stageOnly = false, syncOnly = false;
   for (let i = 0; i < raw.length; i++) {
     const a = raw[i];
     if (a === "--go") go = true;
+    else if (a === "--stage-only") { go = true; stageOnly = true; }
+    else if (a === "--sync-only") syncOnly = true;
     else if (a === "--only") only = (raw[++i] || "").toLowerCase();
     else if (!a.startsWith("--") && !dossier) dossier = a;
   }
+
+  // Reprise pure : pousser ce qui attend deja en local (apres qu'Odoo soit revenu).
+  if (syncOnly) {
+    await pousser("Synchronisation du cache local vers Odoo");
+    return;
+  }
+
   if (!dossier) {
-    console.error("Usage: node scripts/import_fiches.js <dossier> [--go] [--only <texte>]");
+    console.error("Usage: node scripts/import_fiches.js <dossier> [--go] [--only <texte>] [--stage-only]\n       node scripts/import_fiches.js --sync-only");
     process.exit(1);
   }
 
@@ -99,8 +131,9 @@ function indenter(texte) {
     return;
   }
 
-  console.log(`${go ? "⚠️  IMPORT REEL (--go) : ecriture dans Odoo" : "DRY-RUN : lecture seule, RIEN n'est ecrit"} — ${fichiers.length} fichier(s)\n`);
-  const total = { fiches: 0, actions: 0, pistes: 0, evenements: 0, activites: 0, deja: 0, echecs: 0, ignores: 0 };
+  const mode = stageOnly ? "GARDE EN LOCAL (--stage-only)" : go ? "GARDE EN LOCAL puis SYNCHRONISE (--go)" : "DRY-RUN : lecture seule, RIEN n'est gardé";
+  console.log(`${mode} — ${fichiers.length} fichier(s)\n`);
+  const total = { fiches: 0, actions: 0, stagees: 0, deja: 0, ignores: 0, echecs: 0 };
 
   for (const f of fichiers) {
     const chemin = path.join(dossier, f);
@@ -122,30 +155,31 @@ function indenter(texte) {
     total.actions += (r.plan.actions || []).length;
     console.log(indenter(r.kind === "relance" ? resumePlanRelance(r.plan) : resumePlan(r.plan)));
 
-    // Fiche d'appel sans en-tete lisible (agent/date) : on N'ECRIT PAS (donnees
+    // Fiche d'appel sans en-tete lisible (agent/date) : on NE GARDE PAS (donnees
     // mal datees). A corriger via le nom de fichier (ex "Fiche Ben 22-09-26").
     if (go && r.kind === "appel" && r.plan.besoin_entete) {
-      console.log("  ⏭️  non ecrite : en-tete (agent/date) manquante — renomme le fichier ou passe par Lark.");
+      console.log("  ⏭️  non gardée : en-tete (agent/date) manquante — renomme le fichier (ex « Fiche Ben 22-09-26 ») ou passe par Lark.");
       continue;
     }
     if (go) {
-      const res = await executerPlan(r.plan);
-      total.pistes += res.pistes_creees;
-      total.evenements += res.evenements;
-      total.activites += res.activites;
-      total.deja += res.deja_synced;
-      total.echecs += res.echecs.length;
-      console.log(`  ✅ ecrit : ${res.pistes_creees} pistes, ${res.evenements} evenements, ${res.activites} activites, ${res.deja_synced} deja-faites, ${res.echecs.length} echecs`);
-      if (res.echecs.length) console.log("     ", JSON.stringify(res.echecs.slice(0, 5)));
+      const s = stagerPlan(r.plan);
+      total.stagees += s.stagees;
+      total.deja += s.deja;
+      console.log(`  📥 gardé en local : ${s.stagees} ligne(s)${s.deja ? ` (${s.deja} déjà gardées)` : ""}`);
     }
   }
 
   console.log(
-    `\n===== TOTAL : ${total.fiches} fiches, ${total.actions} lignes, ${total.ignores} ignorees` +
-    (go ? ` | ECRIT : ${total.pistes} pistes, ${total.evenements} evenements, ${total.activites} activites, ${total.deja} deja, ${total.echecs} echecs` : " — DRY-RUN") +
+    `\n===== TOTAL : ${total.fiches} fiches, ${total.actions} lignes, ${total.ignores} ignorées` +
+    (go ? ` | GARDÉ : ${total.stagees} (${total.deja} déjà)` : " — DRY-RUN") +
     " ====="
   );
-  if (!go) console.log("Ajoute --go pour ecrire reellement dans Odoo.");
+
+  if (!go) { console.log("Ajoute --go pour garder en local + synchroniser (ou --stage-only pour garder sans pousser)."); return; }
+  if (stageOnly) { console.log("Gardé en local. Lance « --sync-only » (ou « synchronise tout » dans Lark) pour pousser dans Odoo."); return; }
+
+  // --go : on pousse ce qui vient d'etre garde (resilient si Odoo down).
+  await pousser("Synchronisation vers Odoo");
 })().catch((e) => {
   console.error("Erreur fatale:", e.message);
   process.exit(1);
