@@ -23,7 +23,15 @@ function aujourdhuiCmr() {
 }
 const jour = (dt) => String(dt || "").slice(0, 10);               // AAAA-MM-JJ
 const jjmmaaaa = (dt) => { const j = jour(dt); return j ? `${j.slice(8, 10)}/${j.slice(5, 7)}/${j.slice(0, 4)}` : ""; };
-const heureDe = (dt) => { const m = String(dt || "").match(/\d{4}-\d{2}-\d{2}[ T](\d{2}:\d{2})/); return m ? m[1] : ""; };
+// Odoo stocke les datetimes en UTC ; les commerciaux sont a Africa/Douala
+// (UTC+1, pas de DST). On convertit pour afficher la vraie heure locale.
+function enDouala(dtUtc) {
+  const d = new Date(String(dtUtc || "").replace(" ", "T") + "Z");
+  if (!dtUtc || isNaN(d)) return { date: jour(dtUtc), heure: "" };
+  const l = new Date(d.getTime() + 3600 * 1000);
+  const p = (n) => String(n).padStart(2, "0");
+  return { date: `${l.getUTCFullYear()}-${p(l.getUTCMonth() + 1)}-${p(l.getUTCDate())}`, heure: `${p(l.getUTCHours())}:${p(l.getUTCMinutes())}` };
+}
 function heureMoins1(h) { const m = String(h || "").match(/(\d{1,2}):(\d{2})/); if (!m) return ""; return String((Number(m[1]) + 23) % 24).padStart(2, "0") + ":" + m[2]; }
 const last8 = (t) => String(t || "").replace(/\D/g, "").slice(-8);
 const nom2 = (v) => (Array.isArray(v) ? v[1] : "");    // many2one [id, "Nom"]
@@ -51,7 +59,8 @@ async function collecterRdv(debut, fin) {
   const parCle = new Map(); // leadId|date -> rdv (calendar prioritaire)
   for (const e of cal) {
     const leadId = id2(e.res_id); if (!leadId) continue;
-    parCle.set(`${leadId}|${jour(e.start)}`, { leadId, dateRdv: jour(e.start), heure: heureDe(e.start), prisLe: jour(e.create_date), agent: nom2(e.user_id), source: "calendar" });
+    const loc = enDouala(e.start); // UTC -> heure locale Douala
+    parCle.set(`${leadId}|${loc.date}`, { leadId, dateRdv: loc.date, heure: loc.heure, prisLe: jour(e.create_date), agent: nom2(e.user_id), source: "calendar" });
   }
   for (const a of act) {
     const leadId = id2(a.res_id); if (!leadId) continue;
