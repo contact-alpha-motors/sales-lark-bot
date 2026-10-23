@@ -7,6 +7,7 @@ const { extraireFeuilleAppel, construirePlan, resumePlan, completerEntete, stage
 const { extraireFicheReception, construirePlanRelance, resumePlanRelance, contientCorrections, appliquerCorrections } = require("../odoo/import_relance");
 const { lignesRdvDuJour, lignesLapins, aujourdhuiCmr } = require("../odoo/fiches_rdv");
 const { genererFicheAppel } = require("../documents/fiche_appel_pdf");
+const { extraireFicheRdv, construirePlanFicheRdv, resumePlanFicheRdv } = require("../odoo/import_fiche_rdv");
 const {
   enregistrerMessage,
   poserActionEnAttente,
@@ -68,6 +69,29 @@ async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichie
   if (cheminFichier) {
     const indice = `${texte || ""} ${path.basename(cheminFichier).replace(/^\d+-/, "")}`;
     const type = typeParIndice(indice);
+
+    // --- SCAN-RETOUR d'une fiche d'appels branded (cases cochees) ---
+    // On ne tente cette lecture que si l'indice le suggere (nom/legende), pour
+    // ne pas payer une OCR specifique sur chaque document. Si ce n'est pas cette
+    // fiche (est_fiche_rdv_appels=false), on retombe sur le routage normal.
+    if (/fiche.*appel|rdv|rendez.?vous|non.?honor|suivi.?appel|lapin/i.test(indice)) {
+      let fr = null;
+      try { fr = await extraireFicheRdv(cheminFichier); } catch (e) { console.error(`[import] extraction fiche rdv : ${e.message}`); }
+      if (fr && fr.est_fiche_rdv_appels && Array.isArray(fr.lignes) && fr.lignes.length) {
+        enregistrerMessage({ message_id: messageId, chat_id: chatId, sender_id: senderId, role: "user", contenu: `${texte || ""}\n[fiche d'appels remplie jointe]`.trim(), fichier: cheminFichier });
+        if (!peutExecuter(senderId, "creer_lead")) return repondre(chatId, "Tu n'as pas le droit d'importer dans Odoo. Contacte un responsable.");
+        console.log(`[agent ${chatId.slice(-6)}] fiche d'appels remplie : ${fr.lignes.length} lignes`);
+        let plan;
+        try { plan = await construirePlanFicheRdv(fr, indice); }
+        catch (e) {
+          if (estErreurOdoo(e)) return repondre(chatId, `J'ai lu la fiche d'appels (${fr.lignes.length} lignes) et je l'ai gardee, mais Odoo est injoignable. Renvoie-la quand il sera revenu (gratuit, deja lue).`);
+          throw e;
+        }
+        poserActionEnAttente(chatId, "import_fiche_rdv", plan, "Scan fiche d'appels");
+        return repondre(chatId, resumePlanFicheRdv(plan));
+      }
+      // sinon : pas cette fiche -> routage normal ci-dessous.
+    }
 
     // --- Fiche de relance (receptions relancees par un commercial) ---
     if (type === "reception") {
@@ -297,7 +321,7 @@ async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichie
       // Import d'une fiche (appel manuscrite OU relance receptions) : on GARDE
       // d'abord en LOCAL, rien n'est ecrit dans Odoo. La synchro se declenche a
       // la demande (« synchronise tout / cecile / la fiche »), en tout ou partie.
-      if (attente.outil === "import_appels" || attente.outil === "import_relance") {
+      if (attente.outil === "import_appels" || attente.outil === "import_relance" || attente.outil === "import_fiche_rdv") {
         // Garde-fou en-tete : uniquement pour les fiches d'appel (agent/date
         // manuscrits). Les fiches de relance ont toujours une date par defaut.
         if (attente.outil === "import_appels" && enteteInvalide(attente.parametres)) {
