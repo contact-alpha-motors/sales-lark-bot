@@ -5,6 +5,8 @@ const { OUTILS, schemas } = require("./outils");
 const { peutExecuter } = require("./droits");
 const { extraireFeuilleAppel, construirePlan, resumePlan, completerEntete, stagerPlan } = require("../odoo/import_appels");
 const { extraireFicheReception, construirePlanRelance, resumePlanRelance, contientCorrections, appliquerCorrections } = require("../odoo/import_relance");
+const { lignesRdvDuJour, lignesLapins, aujourdhuiCmr } = require("../odoo/fiches_rdv");
+const { genererFicheAppel } = require("../documents/fiche_appel_pdf");
 const {
   enregistrerMessage,
   poserActionEnAttente,
@@ -199,6 +201,41 @@ async function traiterMessage({ chatId, senderId, messageId, texte, cheminFichie
       else msg += ` (Les lignes déjà importées restent protégées des doublons — dis « réimporte la fiche … » pour forcer une ré-écriture.)`;
       msg += `\n\nRenvoie-moi la fiche : elle sera relue de zéro avec le dernier modèle et les dernières règles.`;
       return repondre(chatId, msg);
+    }
+  }
+
+  // Commande : SORTIR une fiche d'appels (lecture seule Odoo -> PDF branded).
+  //   « sors la fiche des RDV du jour »     -> RDV programmes aujourd'hui (a confirmer)
+  //   « sors la fiche des RDV non honores »  -> lapins septembre-octobre (relance)
+  if (texte) {
+    const demandeJour = /\b(sors|sortir|g[eé]n[eè]re[rz]?|donne|fais|envoie)\b[^]*\bfiche\b[^]*(rdv|rendez.?vous)?[^]*\b(du jour|d['’ ]?aujourd)/i.test(texte);
+    const demandeLapins = /\b(sors|sortir|g[eé]n[eè]re[rz]?|donne|fais|envoie)\b[^]*\bfiche\b[^]*\b(lapin|non.?honor|pas.?honor|manqu)/i.test(texte);
+    if (demandeJour || demandeLapins) {
+      try {
+        let lignes, nomFichier, titre, sousTitre, quoi;
+        if (demandeJour) {
+          const d = aujourdhuiCmr();
+          lignes = await lignesRdvDuJour(d);
+          nomFichier = `Fiche_RDV_du_jour_${d}.pdf`;
+          titre = "FICHE D'APPELS H-1 — RDV du jour (appeler 1 heure avant)";
+          sousTitre = `RDV du ${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}`;
+          quoi = "RDV du jour";
+        } else {
+          const fin = aujourdhuiCmr();
+          lignes = await lignesLapins("2026-09-01", fin);
+          nomFichier = `Fiche_RDV_non_honores_${fin}.pdf`;
+          titre = "FICHE D'APPELS — RDV non honorés (relance)";
+          sousTitre = "Septembre & Octobre 2026";
+          quoi = "RDV non honorés";
+        }
+        if (!lignes.length) return repondre(chatId, `Aucune ligne à sortir pour « ${quoi} » (rien trouvé dans Odoo).`);
+        const chemin = await genererFicheAppel({ nomFichier, titre, sousTitre, lignes });
+        journaliser(chatId, senderId, "fiche_rdv", { quoi }, { lignes: lignes.length, fichier: nomFichier });
+        return repondre(chatId, `Fiche « ${quoi} » : ${lignes.length} ligne(s).`, chemin);
+      } catch (e) {
+        if (estErreurOdoo(e)) return repondre(chatId, "Odoo est injoignable, je ne peux pas sortir la fiche maintenant. Réessaie quand il sera revenu.");
+        throw e;
+      }
     }
   }
 
